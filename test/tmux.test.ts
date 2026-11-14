@@ -64,6 +64,12 @@ describe('parseDialog', () => {
     expect(parseDialog(single.replace('  2. Blue', '❯ 2. Blue'))).toBeNull()
   })
 
+  it('keeps the hash stable when only the cursor moves', async () => {
+    const single = await screen('ask_single')
+    const moved = single.replace('❯ 1. Red', '  1. Red').replace('  2. Blue', '❯ 2. Blue')
+    expect(parseDialog(moved)?.hash).toBe(parseDialog(single)?.hash)
+  })
+
   it('keeps the hash stable across redraw whitespace', async () => {
     const single = await screen('ask_single')
     const redrawn = single.replace('  2. Blue', '  2. Blue      ').replace('Pick a color', 'Pick a color   ')

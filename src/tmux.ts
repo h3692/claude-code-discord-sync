@@ -55,7 +55,8 @@ export function parseDialog(screen: string): Dialog | null {
   // Hash everything shown from the dialog's top border down, so a different command gets a different hash.
   let top = start - 1
   while (top >= 0 && !BORDER.test(lines[top])) top--
-  const body = lines.slice(top + 1, last + 1).map((l) => l.trim()).filter(Boolean).join('\n')
+  // The ❯ cursor is dropped so arrow-key navigation doesn't look like a new prompt.
+  const body = lines.slice(top + 1, last + 1).map((l) => l.trim().replace(/^❯\s*/, '')).filter(Boolean).join('\n')
   const hash = createHash('sha256').update(body).digest('hex').slice(0, 12)
   return { question, options, hash }
 }

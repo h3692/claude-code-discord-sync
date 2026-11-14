@@ -486,6 +486,11 @@ describe('step: messages from Discord', () => {
     }
   })
 
+  it('does not count cursor-only !keys as an answer', () => {
+    const a = waiting(start().state, 'approval_bash')
+    expect(say(a.state, '!keys Down Up').state.card!.answered).toBeNull()
+  })
+
   it('resolves an open card as answered by !keys', () => {
     const a = waiting(start().state, 'approval_bash')
     const b = say(a.state, '!KEYS  1 ')

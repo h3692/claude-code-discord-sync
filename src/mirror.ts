@@ -288,7 +288,8 @@ export function step(state: State, input: Input): { state: State; actions: Actio
             else if (!s.pane) reply(READ_ONLY)
             else {
               actions.push({ type: 'keys', keys, replyTo: input.id })
-              if (s.card) s.card = { ...s.card, answered: `\`!keys ${args}\``, repeats: 0 }
+              // Only a digit or Enter answers a prompt; arrows just move the cursor.
+              if (s.card && keys.some((k) => /^\d$/.test(k) || k === 'Enter')) s.card = { ...s.card, answered: `\`!keys ${args.trim()}\``, repeats: 0 }
             }
             break
           }
