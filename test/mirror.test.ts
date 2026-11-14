@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
-  endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor,
+  dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor,
 } from '../src/mirror.ts'
 import type { Action, State } from '../src/mirror.ts'
 import type { TranscriptEvent } from '../src/transcript.ts'
@@ -22,6 +22,20 @@ describe('newMirror', () => {
     const { state, actions } = start()
     expect(actions).toEqual([{ type: 'create_channel', name: 'proj-fix-login', topic: `ccds|42|${procStart}` }])
     expect(state).toMatchObject({ key: `42|${procStart}`, sessionId: 's1', folder: 'proj', cwd, userId: 'u1', pane: '%1', status: 'idle', titled: false })
+  })
+
+  it('does not repeat the folder when the session name already starts with it', () => {
+    const make = (name: string) => newMirror({ pid: 42, procStart, sessionId: 's1', cwd, name, pane: '%1', status: 'idle' }, 'u1')
+    expect(make('proj-30').state.channel).toBe('proj-30')
+    expect(make('Proj 30').actions[0]).toMatchObject({ name: 'proj-30' })
+    expect(make('project-30').state.channel).toBe('proj-project-30')
+  })
+
+  it('restores the archive flag on reattach', () => {
+    const { state, actions } = newMirror({ pid: 42, procStart, sessionId: 's1', cwd, name: 'x', pane: '%1', status: 'idle', archiveOnEnd: true }, 'u1')
+    expect(state.archiveOnEnd).toBe(true)
+    expect(actions[0]).toMatchObject({ topic: `ccds|42|${procStart}|archive` })
+    expect(start().state.archiveOnEnd).toBe(false)
   })
 })
 
@@ -45,6 +59,14 @@ describe('step: messages from the terminal', () => {
     expect(first.state.pendingEcho).toEqual(['other'])
     const second = events(first.state, { kind: 'prompt', text: 'hi there' })
     expect(sends(second.actions)).toHaveLength(1)
+  })
+
+  it('drops a refused paste from the pending echoes, so a later identical prompt still posts', () => {
+    const s0 = { ...start().state, pendingEcho: ['a', 'hi', 'hi'] }
+    const s1 = dropEcho(s0, ' hi\r\n')
+    expect(s1.pendingEcho).toEqual(['a', 'hi'])
+    expect(s0.pendingEcho).toEqual(['a', 'hi', 'hi'])
+    expect(dropEcho(s1, 'nope').pendingEcho).toEqual(['a', 'hi'])
   })
 })
 
@@ -224,7 +246,7 @@ describe('step: prompt cards', () => {
         { id: `ccds:4:${d.hash}`, label: '4. No' },
       ],
     }])
-    expect(state.card).toEqual({ ref: state.card!.ref, hash: d.hash, dialog: d, answered: null })
+    expect(state.card).toEqual({ ref: state.card!.ref, hash: d.hash, dialog: d, answered: null, repeats: 0 })
     expect(state.status).toBe('waiting')
   })
 
@@ -260,26 +282,74 @@ describe('step: prompt cards', () => {
   })
 
   it('says to answer at the terminal when the session is not in tmux', () => {
-    const { state, actions } = waiting(start().state, null)
+    const { state, actions } = waiting({ ...start().state, pane: null }, null)
     expect(actions).toEqual([{
       type: 'send', ref: state.card!.ref, content: '<@u1>', ping: true, buttons: [],
       embed: { title: '🟡 Claude needs you', description: "Claude is waiting for you, but this session isn't in tmux — answer at the terminal." },
     }])
   })
 
-  it('edits the same card, without a new ping, for each step of a multi-question prompt', () => {
+  it('says the screen could not be read when the session is in tmux but the capture failed', () => {
+    const { actions } = waiting({ ...start().state, pane: '%1' }, null)
+    expect(actions[0]).toMatchObject({
+      embed: { description: "Claude is waiting for you, but the screen couldn't be read — answer at the terminal, or try `!keys`." },
+    })
+  })
+
+  it('edits the same card, without a new ping, when the prompt moves on after a terminal answer', () => {
     const a = waiting(start().state, 'ask_two')
-    const b = click(a.state, 1, 'ask_two')
-    const c = waiting(b.state, 'ask_two_q2')
+    const c = waiting(a.state, 'ask_two_q2')
     const q2 = parseDialog(screen('ask_two_q2'))!
     expect(c.actions).toEqual([{
       type: 'edit', ref: a.state.card!.ref, content: '<@u1>', embed: renderCard(screen('ask_two_q2')),
       buttons: q2.options.map((o) => ({ id: `ccds:${o.n}:${q2.hash}`, label: `${o.n}. ${o.label}` })),
     }])
-    expect(c.state.card).toEqual({ ref: a.state.card!.ref, hash: q2.hash, dialog: q2, answered: null })
+    expect(c.state.card).toEqual({ ref: a.state.card!.ref, hash: q2.hash, dialog: q2, answered: null, repeats: 0 })
+  })
+
+  it('finalizes a card answered via Discord and pings a new one when the next prompt appears', () => {
+    const a = waiting(start().state, 'ask_two')
+    const b = click(a.state, 1, 'ask_two')
+    const c = waiting(b.state, 'ask_two_q2')
+    const q2 = parseDialog(screen('ask_two_q2'))!
+    expect(c.actions).toEqual([
+      { type: 'edit', ref: a.state.card!.ref, content: `✅ ${a.state.card!.dialog!.options[0].label} — via Discord`,
+        embed: { title: '✅ Answered', description: a.state.card!.dialog!.question }, buttons: [] },
+      { type: 'send', ref: c.state.card!.ref, content: '<@u1>', ping: true, embed: renderCard(screen('ask_two_q2')),
+        buttons: q2.options.map((o) => ({ id: `ccds:${o.n}:${q2.hash}`, label: `${o.n}. ${o.label}` })) },
+    ])
+    expect(c.state.card).toEqual({ ref: c.state.card!.ref, hash: q2.hash, dialog: q2, answered: null, repeats: 0 })
+    expect(c.state.card!.ref).not.toBe(a.state.card!.ref)
     const d = waiting(click(c.state, 2, 'ask_two_q2').state, 'ask_two_review')
-    expect(d.actions).toHaveLength(1)
-    expect(d.actions[0]).toMatchObject({ type: 'edit', buttons: [{ label: '1. Submit answers' }, { label: '2. Cancel' }] })
+    expect(d.actions).toHaveLength(2)
+    expect(d.actions[1]).toMatchObject({ type: 'send', ping: true, buttons: [{ label: '1. Submit answers' }, { label: '2. Cancel' }] })
+  })
+
+  it('treats the same prompt still showing three polls after an answer as a new identical prompt', () => {
+    const a = waiting(start().state, 'approval_bash')
+    let s = click(a.state, 1, 'approval_bash').state
+    for (let i = 0; i < 2; i++) {
+      const r = waiting(s, 'approval_bash')
+      expect(r.actions).toEqual([])
+      s = r.state
+    }
+    // An unreadable redraw breaks the run.
+    s = waiting(s, 'ask_multi').state
+    for (let i = 0; i < 2; i++) s = waiting(s, 'approval_bash').state
+    const r = waiting(s, 'approval_bash')
+    expect(r.actions).toEqual([
+      { type: 'edit', ref: a.state.card!.ref, content: '✅ Yes — via Discord', embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [] },
+      expect.objectContaining({ type: 'send', ref: r.state.card!.ref, ping: true, embed: renderCard(screen('approval_bash')) }),
+    ])
+    expect(r.state.card).toMatchObject({ answered: null, repeats: 0 })
+    expect(waiting(r.state, 'approval_bash').actions).toEqual([])
+    // Never answered: redraws stay quiet however long they last.
+    let q = a.state
+    for (let i = 0; i < 5; i++) {
+      const x = waiting(q, 'approval_bash')
+      expect(x.actions).toEqual([])
+      q = x.state
+    }
   })
 
   it('adds buttons once an unreadable prompt becomes readable', () => {
@@ -319,7 +389,7 @@ describe('step: prompt cards', () => {
     const a = waiting(start().state, 'approval_bash')
     const b = click(a.state, 4, 'approval_bash')
     expect(b.actions).toEqual([
-      { type: 'keys', keys: ['4'] },
+      { type: 'keys', keys: ['4'], hash: parseDialog(screen('approval_bash'))!.hash },
       { type: 'edit', ref: a.state.card!.ref, content: '⏳ sending 4. No…', embed: { title: '⏳ Sending', description: 'Do you want to proceed?' }, buttons: [] },
     ])
     expect(b.state.card!.answered).toBe('No')
@@ -346,7 +416,7 @@ describe('step: prompt cards', () => {
     expect(click(open, 1, 'ask_two_q2', 'waiting', parseDialog(screen('ask_two'))!.hash).actions).toEqual(closed) // screen moved on
     expect(click(open, 1, 'ask_multi', 'waiting', q2).actions).toEqual(closed) // unreadable now
     expect(click(open, 9, 'ask_two').actions).toEqual(closed)
-    expect(click(open, 1, 'ask_two').actions[0]).toEqual({ type: 'keys', keys: ['1'] })
+    expect(click(open, 1, 'ask_two').actions[0]).toEqual({ type: 'keys', keys: ['1'], hash: parseDialog(screen('ask_two'))!.hash })
   })
 
   it('never changes the state it was given', () => {
@@ -401,6 +471,33 @@ describe('step: messages from Discord', () => {
     }
   })
 
+  it('refuses ! hidden behind invisible characters or written as a lookalike', () => {
+    const content = "🚫 Messages starting with `!` aren't sent — Claude Code would run them as shell commands. Commands: `!keys`, `!type`, `!archive`."
+    for (const text of ['\u200b!id', '\ufeff!id', '\u200d\u2060!id', '！id', '﹗id']) {
+      const { state, actions } = say(start().state, text)
+      expect(actions).toEqual([{ type: 'reply', replyTo: 'm1', content }])
+      expect(state.pendingEcho).toEqual([])
+    }
+    const s0 = { ...start().state, status: 'waiting' }
+    for (const text of ['!type \u200b!id', '!type ！id', '!type ﹗id', '\u200b!type !id']) {
+      expect(say(s0, text).actions).toEqual([
+        { type: 'reply', replyTo: 'm1', content: '🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.' },
+      ])
+    }
+  })
+
+  it('resolves an open card as answered by !keys', () => {
+    const a = waiting(start().state, 'approval_bash')
+    const b = say(a.state, '!KEYS  1 ')
+    expect(b.actions).toEqual([{ type: 'keys', keys: ['1'], replyTo: 'm1' }])
+    expect(b.state.card!.answered).toBe('`!keys 1`')
+    expect(step(b.state, { kind: 'status', status: 'busy', screen: null }).actions).toEqual([{
+      type: 'edit', ref: a.state.card!.ref, content: '✅ `!keys 1` — via Discord',
+      embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [],
+    }])
+    expect(say(start().state, '!keys 1').state.card).toBeNull()
+  })
+
   it('sends keys, case-insensitively', () => {
     expect(say(start().state, '!KEYS down enter').actions).toEqual([{ type: 'keys', keys: ['Down', 'Enter'], replyTo: 'm1' }])
   })
@@ -415,7 +512,7 @@ describe('step: messages from Discord', () => {
   it('types an answer while a prompt is open, but not one starting with !', () => {
     const s0 = { ...start().state, status: 'waiting' }
     const a = say(s0, '!type yes')
-    expect(a.actions).toEqual([{ type: 'paste', text: 'yes', replyTo: 'm1' }])
+    expect(a.actions).toEqual([{ type: 'paste', text: 'yes', replyTo: 'm1', allowWaiting: true }])
     expect(a.state.pendingEcho).toEqual(['yes'])
     for (const text of ['!type !ls', '!type \x1b!ls']) expect(say(s0, text).actions).toEqual([
       { type: 'reply', replyTo: 'm1', content: '🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.' },
@@ -437,8 +534,11 @@ describe('step: messages from Discord', () => {
   })
 
   it('archives the channel at the end once asked, with or without tmux', () => {
+    const done = { type: 'reply', replyTo: 'm1', content: '📦 This channel will be archived when the session ends.' }
     const a = say({ ...start().state, pane: null }, '!Archive')
-    expect(a.actions).toEqual([{ type: 'reply', replyTo: 'm1', content: '📦 This channel will be archived when the session ends.' }])
+    // Kept in the topic so a watcher restart still archives.
+    expect(a.actions).toEqual([{ type: 'set_topic', topic: `ccds|42|${procStart}|archive` }, done])
+    expect(say(a.state, '!archive').actions).toEqual([done])
     expect(step(a.state, { kind: 'ended' }).actions).toEqual([{ type: 'end_channel', archive: true }])
   })
 
@@ -465,8 +565,18 @@ describe('topics', () => {
   it('round-trips the process identity, spaces included', () => {
     const topic = topicFor(42, procStart)
     expect(topic).toBe(`ccds|42|${procStart}`)
-    expect(parseTopic(topic)).toEqual({ pid: 42, procStart, endedAt: null })
-    expect(parseTopic(endedTopic(topic, 1700))).toEqual({ pid: 42, procStart, endedAt: 1700 })
+    expect(parseTopic(topic)).toEqual({ pid: 42, procStart, archive: false, endedAt: null })
+    expect(parseTopic(endedTopic(topic, 1700))).toEqual({ pid: 42, procStart, archive: false, endedAt: 1700 })
+  })
+
+  it('round-trips the archive flag, through an end and a re-end', () => {
+    const topic = topicFor(42, procStart, true)
+    expect(topic).toBe(`ccds|42|${procStart}|archive`)
+    expect(parseTopic(topic)).toEqual({ pid: 42, procStart, archive: true, endedAt: null })
+    const ended = endedTopic(endedTopic(topic, 1700), 1800)
+    expect(ended).toBe(`ccds|42|${procStart}|archive|ended:1800`)
+    expect(parseTopic(ended)).toEqual({ pid: 42, procStart, archive: true, endedAt: 1800 })
+    expect(parseTopic(`ccds|42|${procStart}|ended:5|archive`)).toBeNull()
   })
 
   it('rejects topics it did not write', () => {

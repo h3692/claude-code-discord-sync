@@ -12,9 +12,10 @@ export type Action =
   | { type: 'send'; ref: string; content?: string; embed?: { title: string; description: string }; buttons?: Button[]; ping?: boolean }
   | { type: 'edit'; ref: string; content?: string; embed?: { title: string; description: string }; buttons?: Button[] } // buttons: [] removes them
   | { type: 'end_channel'; archive: boolean }
-  | { type: 'paste'; text: string; replyTo: string } // replyTo = Discord message id to react ✅ on success
-  | { type: 'keys'; keys: string[]; replyTo?: string }
+  | { type: 'paste'; text: string; replyTo: string; allowWaiting?: true } // replyTo = Discord message id to react ✅ on success; allowWaiting: from !type
+  | { type: 'keys'; keys: string[]; replyTo?: string; hash?: string } // hash: the dialog a button click was validated against
   | { type: 'reply'; replyTo: string; content: string } // short bot reply to a user message or button (index decides reply vs ephemeral)
+  | { type: 'set_topic'; topic: string }
 
 export type State = {
   key: string // `${pid}|${procStart}`
@@ -33,7 +34,8 @@ export type State = {
   agentsRef: string | null
   agentIds: string[] // every Agent tool_use id ever seen this session (so tool_end/agent_end map to agents)
   rendered: Record<string, string> // last content sent per activity/agents ref, to skip no-op edits
-  card: { ref: string; hash: string | null; dialog: Dialog | null; answered: string | null } | null
+  // repeats: consecutive polls still showing the answered dialog
+  card: { ref: string; hash: string | null; dialog: Dialog | null; answered: string | null; repeats: number } | null
   pendingEcho: string[] // normalized texts pasted from Discord, awaiting their transcript echo (cap 20)
   archiveOnEnd: boolean
 }
@@ -45,29 +47,44 @@ export type Input =
   | { kind: 'message'; id: string; text: string }
   | { kind: 'button'; id: string; n: number; hash: string; status: string; screen: string | null } // fresh status+capture taken at click time
 
-const TOPIC = /^ccds\|(\d+)\|([^|]+)(?:\|ended:(\d+))?$/
+const TOPIC = /^ccds\|(\d+)\|([^|]+)(\|archive)?(?:\|ended:(\d+))?$/
 const EMBED_MAX = 4096
 const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!keys Down Enter` or `!type your answer`"
 const NO_TMUX = "Claude is waiting for you, but this session isn't in tmux — answer at the terminal."
+const NO_SCREEN = "Claude is waiting for you, but the screen couldn't be read — answer at the terminal, or try `!keys`."
 const CLOSED = 'That prompt is no longer open.'
 const READ_ONLY = "👀 Read-only: this session isn't running in tmux."
 const BAD_KEYS = '⌨️ Allowed keys: digits 0-9, Up, Down, Left, Right, Enter, Escape, Tab, BTab, Space, BSpace (max 20). Example: `!keys Down Enter`'
 
 // Claude Code records a pasted prompt as the sanitized paste, trimmed; both sides of the echo match use this.
-const normalize = (text: string) => sanitizePaste(text).trim()
+// Format characters (zero-width space, BOM, …) are dropped too, so they can't hide a leading `!`.
+const normalize = (text: string) => sanitizePaste(text).replace(/\p{Cf}/gu, '').trim()
+// Fullwidth and small exclamation marks count as `!`.
+const SHELL = /^[!！﹗]/
+// Polls after an answer that may still show the old screen; the same prompt past that was asked again.
+const REPEATS = 3
 
 export function newMirror(
-  s: { pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string },
+  s: { pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string; archiveOnEnd?: boolean },
   userId: string,
 ): { state: State; actions: Action[] } {
   const folder = basename(s.cwd)
-  const channel = channelName(folder, s.name)
+  // Session names often already start with the folder.
+  const prefix = channelName(folder, '') + '-'
+  const full = channelName(folder, s.name)
+  const channel = full.startsWith(prefix + prefix) ? full.slice(prefix.length) : full
   const state: State = {
     key: `${s.pid}|${s.procStart}`, sessionId: s.sessionId, folder, cwd: s.cwd, userId, pane: s.pane, status: s.status,
     titled: false, channel, seq: 0, tools: [], activityRefs: [], agents: [], agentsRef: null, agentIds: [], rendered: {},
-    card: null, pendingEcho: [], archiveOnEnd: false,
+    card: null, pendingEcho: [], archiveOnEnd: s.archiveOnEnd ?? false,
   }
-  return { state, actions: [{ type: 'create_channel', name: channel, topic: topicFor(s.pid, s.procStart) }] }
+  return { state, actions: [{ type: 'create_channel', name: channel, topic: topicFor(s.pid, s.procStart, state.archiveOnEnd) }] }
+}
+
+// For a paste that index refused, so its echo doesn't swallow a later identical terminal prompt.
+export function dropEcho(state: State, text: string): State {
+  const i = state.pendingEcho.indexOf(normalize(text))
+  return i === -1 ? state : { ...state, pendingEcho: state.pendingEcho.filter((_, j) => j !== i) }
 }
 
 export function step(state: State, input: Input): { state: State; actions: Action[] } {
@@ -206,8 +223,20 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         const cut = /[\uD800-\uDBFF]/.test(text[78]) ? 78 : 79
         return { id: `ccds:${n}:${dialog!.hash}`, label: text.length > 80 ? text.slice(0, cut) + '…' : text }
       })
+      if (s.card) {
+        const repeats = s.card.answered && dialog?.hash === s.card.hash ? s.card.repeats + 1 : 0
+        if (s.card.answered && ((dialog && dialog.hash !== s.card.hash) || repeats >= REPEATS)) {
+          // A new prompt after an answer from Discord gets its own card and ping.
+          closeCard(`✅ ${s.card.answered} — via Discord`, '✅ Answered')
+        } else if (dialog && dialog.hash !== s.card.hash) {
+          s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: null, repeats: 0 }
+          actions.push({ type: 'edit', ref: s.card.ref, content: `<@${s.userId}>`, embed: renderCard(input.screen!), buttons })
+        } else {
+          s.card = { ...s.card, repeats }
+        }
+      }
       if (!s.card) {
-        let embed = { title: renderCard('').title, description: NO_TMUX }
+        let embed = { title: renderCard('').title, description: s.pane ? NO_SCREEN : NO_TMUX }
         if (input.screen) embed = renderCard(input.screen)
         if (input.screen && !dialog) {
           const over = embed.description.length + HINT.length - EMBED_MAX
@@ -219,11 +248,8 @@ export function step(state: State, input: Input): { state: State; actions: Actio
           }
           embed.description += HINT
         }
-        s.card = { ref: ref(), hash: dialog?.hash ?? null, dialog, answered: null }
+        s.card = { ref: ref(), hash: dialog?.hash ?? null, dialog, answered: null, repeats: 0 }
         actions.push({ type: 'send', ref: s.card.ref, content: `<@${s.userId}>`, embed, buttons, ping: true })
-      } else if (dialog && dialog.hash !== s.card.hash) {
-        s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: null }
-        actions.push({ type: 'edit', ref: s.card.ref, content: `<@${s.userId}>`, embed: renderCard(input.screen!), buttons })
       }
       break
     }
@@ -235,8 +261,8 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       } else if (s.card.answered !== null && s.card.hash === input.hash) {
         actions.push({ type: 'reply', replyTo: input.id, content: 'Already sent.' })
       } else {
-        s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: option.label }
-        actions.push({ type: 'keys', keys: [String(option.n)] })
+        s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: option.label, repeats: 0 }
+        actions.push({ type: 'keys', keys: [String(option.n)], hash: dialog.hash })
         actions.push({
           type: 'edit', ref: s.card.ref, content: `⏳ sending ${option.n}. ${option.label}…`,
           embed: { title: '⏳ Sending', description: dialog.question }, buttons: [],
@@ -248,28 +274,35 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       // Normalized up front so the `!` checks see what the paste would actually type.
       const text = normalize(input.text)
       const reply = (content: string) => actions.push({ type: 'reply', replyTo: input.id, content })
-      const paste = (t: string) => {
-        actions.push({ type: 'paste', text: t, replyTo: input.id })
+      const paste = (t: string, allowWaiting = false) => {
+        actions.push(allowWaiting ? { type: 'paste', text: t, replyTo: input.id, allowWaiting } : { type: 'paste', text: t, replyTo: input.id })
         s.pendingEcho = [...s.pendingEcho, t].slice(-20)
       }
       if (!text) break
-      if (text.startsWith('!')) {
+      if (SHELL.test(text)) {
         const [, cmd, args = ''] = text.match(/^!(\w+)(?:\s+([\s\S]*))?$/) ?? []
         switch (cmd?.toLowerCase()) {
           case 'keys': {
             const keys = parseKeys(args)
             if (!keys) reply(BAD_KEYS)
             else if (!s.pane) reply(READ_ONLY)
-            else actions.push({ type: 'keys', keys, replyTo: input.id })
+            else {
+              actions.push({ type: 'keys', keys, replyTo: input.id })
+              if (s.card) s.card = { ...s.card, answered: `\`!keys ${args}\``, repeats: 0 }
+            }
             break
           }
           case 'type':
             if (!s.pane) reply(READ_ONLY)
             else if (!args) reply('✍️ Usage: `!type your answer`')
-            else if (args.startsWith('!')) reply('🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.')
-            else paste(args)
+            else if (SHELL.test(args)) reply('🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.')
+            else paste(args, true)
             break
           case 'archive':
+            if (!s.archiveOnEnd) {
+              const i = s.key.indexOf('|') // key = `${pid}|${procStart}`
+              actions.push({ type: 'set_topic', topic: topicFor(Number(s.key.slice(0, i)), s.key.slice(i + 1), true) })
+            }
             s.archiveOnEnd = true
             reply('📦 This channel will be archived when the session ends.')
             break
@@ -285,14 +318,14 @@ export function step(state: State, input: Input): { state: State; actions: Actio
   return { state: s, actions }
 }
 
-export function topicFor(pid: number, procStart: string): string {
-  return `ccds|${pid}|${procStart}`
+export function topicFor(pid: number, procStart: string, archive = false): string {
+  return `ccds|${pid}|${procStart}${archive ? '|archive' : ''}`
 }
 
-export function parseTopic(topic: string | null): { pid: number; procStart: string; endedAt: number | null } | null {
+export function parseTopic(topic: string | null): { pid: number; procStart: string; archive: boolean; endedAt: number | null } | null {
   const m = topic?.match(TOPIC)
   if (!m) return null
-  return { pid: Number(m[1]), procStart: m[2], endedAt: m[3] === undefined ? null : Number(m[3]) }
+  return { pid: Number(m[1]), procStart: m[2], archive: m[3] !== undefined, endedAt: m[4] === undefined ? null : Number(m[4]) }
 }
 
 export function endedTopic(topic: string, now: number): string {
