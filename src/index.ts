@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -13,6 +14,7 @@ import { listSessions, readStatus } from './sessions.ts'
 import type { Session } from './sessions.ts'
 import { capture, checkPane, parseDialog, pasteText, sendKeys } from './tmux.ts'
 import { parseLine, readAppended } from './transcript.ts'
+import type { TranscriptEvent } from './transcript.ts'
 
 const log = (...parts: unknown[]) => console.error(new Date().toISOString(), ...parts)
 
@@ -22,6 +24,16 @@ function alive(pid: number): boolean {
     return true
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === 'EPERM' // exists, owned by someone else
+  }
+}
+
+// A live pid holds the lock only while it still runs this watcher: after a reboot the pid may belong to anything.
+function isWatcher(pid: number): boolean {
+  try {
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).includes('src/index.ts')
+  } catch (e) {
+    // ps exits 1 for a pid that is gone; if ps can't run at all, the live pid is the best we have.
+    return typeof (e as { status?: unknown }).status !== 'number'
   }
 }
 
@@ -35,7 +47,7 @@ export function acquireLock(path: string): boolean {
   }
   const pid = Number(readFileSync(path, 'utf8').trim())
   // pid 0 or negative would signal a whole process group.
-  if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && alive(pid)) return false
+  if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && alive(pid) && isWatcher(pid)) return false
   writeFileSync(path, String(process.pid))
   return true
 }
@@ -98,6 +110,29 @@ export function startOffset(birthtimeMs: number, size: number, now: number): num
   return birthtimeMs >= now - 15_000 ? 0 : size
 }
 
+// Resuming appends the old conversation under the new session id; lines older than its first sight are history.
+export function freshEvents(lines: string[], seenAt: number): TranscriptEvent[] {
+  return lines.flatMap((line) => parseLine(line, seenAt - 5000))
+}
+
+// Claude Code rewrites registry entries in place, so one unreadable poll is not an end; two in a row are.
+export function missCount(misses: number, seen: boolean): { misses: number; ended: boolean } {
+  return seen ? { misses: 0, ended: false } : { misses: misses + 1, ended: misses + 1 >= 2 }
+}
+
+// A refused keystroke must not leave the card marked answered. A button resets its card only while that card
+// still shows the prompt it was clicked on (never a newer one), and edits it out of "⏳ Sending".
+export function unanswer(state: State, a: Extract<Typing, { type: 'keys' }>, reason: string): { state: State; edit: Action | null } {
+  const card = state.card
+  if (!card) return { state, edit: null }
+  if (!a.hash) return { state: { ...state, card: { ...card, answered: null } }, edit: null }
+  if (card.hash !== a.hash) return { state, edit: null }
+  const edit: Action = {
+    type: 'edit', ref: card.ref, content: `⚠️ Not sent — ${reason}`, embed: { title: '⚠️ Not sent', description: card.dialog?.question ?? 'prompt' }, buttons: [],
+  }
+  return { state: { ...state, card: null }, edit }
+}
+
 type Entry = {
   state: State
   pid: number
@@ -108,6 +143,8 @@ type Entry = {
   offset: number
   // Where reading starts once the transcript is known: its end, or by file age (new session, /clear, /resume).
   from: 'eof' | 'birth'
+  seenAt: number // when the current session id was first seen
+  misses: number // consecutive polls without a registry entry
 }
 
 const NO_MENTIONS = { parse: [] as [] }
@@ -231,7 +268,12 @@ function main(): void {
             try {
               e.channel = await guild.channels.create({ name: a.name, type: ChannelType.GuildText, parent: sessionsCat.id, topic: a.topic })
             } catch (err) {
-              if (i >= 4) throw err
+              if (i >= 4) {
+                // Dropped so the next poll tracks the session afresh and tries again.
+                if (mirrors.get(e.state.key) === e) mirrors.delete(e.state.key)
+                log(`create channel ${a.name} failed, retrying on the next poll:`, (err as Error).message)
+                return
+              }
               log(`create channel failed (attempt ${i + 1}):`, (err as Error).message)
               await new Promise((r) => setTimeout(r, 2000 * 2 ** i))
             }
@@ -281,8 +323,13 @@ function main(): void {
         ?? await (a.type === 'paste' ? pasteText(pane, a.text) : sendKeys(pane, a.keys)).then(() => null, (err) => err.message)
       if (reason) {
         log(`not sent to ${pane}: ${reason}`)
-        // The next poll re-posts the card; an unsent paste must not swallow a later identical terminal prompt.
-        if (a.type === 'keys' && a.hash) e.state = { ...e.state, card: null }
+        // The next poll re-posts a reset card; an unsent paste must not swallow a later identical terminal prompt.
+        if (a.type === 'keys') {
+          const { state, edit } = unanswer(e.state, a, reason)
+          e.state = state
+          // Queued behind the "⏳ Sending" edit, so it lands after it.
+          if (edit) void queue(state.key, () => execute(e, [edit]))
+        }
         if (a.type === 'paste') e.state = dropEcho(e.state, a.text)
         if (target) await reply(target, `⚠️ Not sent: ${reason}`)
         return
@@ -306,7 +353,9 @@ function main(): void {
   function track(s: Session, channel: TextChannel | null, from: Entry['from'], archiveOnEnd = false): Entry {
     // Non-interactive (background) sessions are mirrored read-only.
     const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null, archiveOnEnd }, userId)
-    const e: Entry = { state, pid: s.pid, procStart: s.procStart, channel, outbox: new Outbox(), transcript: null, offset: 0, from }
+    const e: Entry = {
+      state, pid: s.pid, procStart: s.procStart, channel, outbox: new Outbox(), transcript: null, offset: 0, from, seenAt: Date.now(), misses: 0,
+    }
     mirrors.set(state.key, e)
     // An existing channel replaces create_channel; its current name stops a needless rename.
     if (channel) e.state = { ...state, channel: channel.name }
@@ -320,7 +369,9 @@ function main(): void {
     const now = Date.now()
     const live = new Set(sessions.map((s) => `${s.pid}|${s.procStart}`))
     for (const [key, e] of mirrors) {
-      if (live.has(key)) continue
+      const { misses, ended } = missCount(e.misses, live.has(key))
+      e.misses = misses
+      if (!ended) continue
       mirrors.delete(key)
       apply(e, { kind: 'ended' })
     }
@@ -331,6 +382,7 @@ function main(): void {
         apply(e, { kind: 'session_changed', sessionId: s.sessionId })
         e.transcript = null
         e.from = 'birth'
+        e.seenAt = now
       }
       if (s.transcript && s.transcript !== e.transcript) {
         const st = await stat(s.transcript).catch(() => null)
@@ -340,7 +392,7 @@ function main(): void {
       if (e.transcript) {
         const { lines, next } = await readAppended(e.transcript, e.offset)
         e.offset = next
-        const events = lines.flatMap(parseLine)
+        const events = freshEvents(lines, e.seenAt)
         if (events.length) apply(e, { kind: 'events', events })
       }
       if (s.status !== e.state.status || s.status === 'waiting') {
@@ -391,7 +443,7 @@ function main(): void {
       const s = sessions.find((x) => `${x.pid}|${x.procStart}` === key)
       // A session whose transcript doesn't exist yet must not skip its first turn.
       if (s && !mirrors.has(key)) track(s, c, s.transcript ? 'eof' : 'birth', t.archive)
-      else void queue(c.id, () => endChannel(c, false))
+      else void queue(c.id, () => endChannel(c, t.archive))
     }
     log(`ready: ${mirrors.size} session(s) reattached`)
     void poll(true)

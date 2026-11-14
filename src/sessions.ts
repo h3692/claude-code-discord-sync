@@ -28,13 +28,17 @@ async function readRegistry(sessionsDir: string): Promise<any[]> {
 }
 
 // Status of one session read straight from its registry entry; null when the entry is missing or unreadable.
+// Claude Code rewrites the entry in place, so an unreadable one gets a second look before it counts as gone.
 export async function readStatus(sessionsDir: string, pid: number): Promise<string | null> {
-  try {
-    const e = JSON.parse(await readFile(join(sessionsDir, `${pid}.json`), 'utf8'))
-    if (typeof e !== 'object' || !e) return null
-    return typeof e.status === 'string' ? e.status : ''
-  } catch {
-    return null
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const e = JSON.parse(await readFile(join(sessionsDir, `${pid}.json`), 'utf8'))
+      if (typeof e !== 'object' || !e) return null
+      return typeof e.status === 'string' ? e.status : ''
+    } catch {
+      if (attempt) return null
+      await new Promise((r) => setTimeout(r, 25))
+    }
   }
 }
 

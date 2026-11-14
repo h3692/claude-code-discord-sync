@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, Outbox, serialQueue, startOffset, typingRefusal } from '../src/index.ts'
+import { acquireLock, freshEvents, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import { newMirror } from '../src/mirror.ts'
 
 const lockPath = () => join(mkdtempSync(join(tmpdir(), 'ccds-lock-')), 'lock')
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -33,11 +35,27 @@ describe('acquireLock', () => {
     expect(readFileSync(path, 'utf8')).toBe(String(process.pid))
   })
 
-  it('refuses while another live process holds it', () => {
-    const path = lockPath()
-    writeFileSync(path, String(process.ppid))
-    expect(acquireLock(path)).toBe(false)
-    expect(readFileSync(path, 'utf8')).toBe(String(process.ppid))
+  it('refuses while another live watcher holds it', async () => {
+    // The command line carries the src/index.ts marker, like a real watcher.
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},5000)', 'src/index.ts'])
+    await once(child, 'spawn')
+    try {
+      const path = lockPath()
+      writeFileSync(path, String(child.pid))
+      expect(acquireLock(path)).toBe(false)
+      expect(readFileSync(path, 'utf8')).toBe(String(child.pid))
+    } finally {
+      child.kill()
+    }
+  })
+
+  it('takes over a lock whose pid was reused by an unrelated live process', () => {
+    for (const pid of [1, process.ppid]) {
+      const path = lockPath()
+      writeFileSync(path, String(pid))
+      expect(acquireLock(path)).toBe(true)
+      expect(readFileSync(path, 'utf8')).toBe(String(process.pid))
+    }
   })
 
   it('takes over a lock left by a dead process', () => {
@@ -211,5 +229,67 @@ describe('typingRefusal', () => {
   it('lets !keys through in any live status', () => {
     expect(typingRefusal(keys, 'waiting', null)).toBeNull()
     expect(typingRefusal(keys, 'idle', null)).toBeNull()
+  })
+})
+
+describe('freshEvents', () => {
+  const seenAt = Date.parse('2026-11-14T12:00:00Z')
+  const prompt = (timestamp?: string) => JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { content: 'hi' }, timestamp })
+
+  it('drops lines written more than 5s before the session id was first seen (resumed history)', () => {
+    expect(freshEvents([prompt('2026-11-10T09:00:00Z'), prompt('2026-11-14T11:59:54Z')], seenAt)).toEqual([])
+  })
+
+  it('keeps lines from the last 5s before first sight onwards, and lines without a timestamp', () => {
+    const lines = [prompt('2026-11-14T11:59:56Z'), prompt('2026-11-14T12:00:01Z'), prompt()]
+    expect(freshEvents(lines, seenAt)).toHaveLength(3)
+  })
+})
+
+describe('missCount', () => {
+  it('ends a session only after two polls in a row without its registry entry', () => {
+    const first = missCount(0, false)
+    expect(first).toEqual({ misses: 1, ended: false })
+    expect(missCount(first.misses, false)).toEqual({ misses: 2, ended: true })
+  })
+
+  it('resets once the session is seen again', () => {
+    expect(missCount(1, true)).toEqual({ misses: 0, ended: false })
+    expect(missCount(missCount(1, true).misses, false)).toEqual({ misses: 1, ended: false })
+  })
+})
+
+describe('unanswer', () => {
+  const dialog = { question: 'Proceed?', options: [{ n: 1, label: 'Yes' }], hash: 'abc' }
+  const withCard = (hash: string, answered: string | null) => ({
+    ...newMirror({ pid: 42, procStart: 'x', sessionId: 's1', cwd: '/p', name: 'n', pane: '%1', status: 'waiting' }, 'u1').state,
+    card: { ref: 'r7', hash, screenHash: 'sh', dialog: hash === 'abc' ? dialog : null, answered, repeats: 0 },
+  })
+  const button = { type: 'keys', keys: ['1'], hash: 'abc' } as const
+  const keys = { type: 'keys', keys: ['Enter'], replyTo: 'm1' } as const
+
+  it('resets the card of a refused button and edits its message out of Sending', () => {
+    const { state, edit } = unanswer(withCard('abc', 'Yes'), button, 'the prompt changed')
+    expect(state.card).toBeNull()
+    expect(edit).toEqual({
+      type: 'edit', ref: 'r7', content: '⚠️ Not sent — the prompt changed', embed: { title: '⚠️ Not sent', description: 'Proceed?' }, buttons: [],
+    })
+  })
+
+  it('leaves a newer card alone when a refused button was for an older prompt', () => {
+    const s = withCard('def', null)
+    expect(unanswer(s, button, 'x')).toEqual({ state: s, edit: null })
+  })
+
+  it('un-marks an open card answered by a refused !keys, without editing it', () => {
+    const { state, edit } = unanswer(withCard('abc', '`!keys Enter`'), keys, 'the session is gone')
+    expect(state.card).toMatchObject({ ref: 'r7', hash: 'abc', answered: null })
+    expect(edit).toBeNull()
+  })
+
+  it('does nothing without an open card', () => {
+    const s = { ...withCard('abc', null), card: null }
+    expect(unanswer(s, keys, 'x')).toEqual({ state: s, edit: null })
+    expect(unanswer(s, button, 'x')).toEqual({ state: s, edit: null })
   })
 })

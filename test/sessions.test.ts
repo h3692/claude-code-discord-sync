@@ -122,6 +122,13 @@ describe('readStatus', () => {
     expect(await readStatus(sessionsDir, 123)).toBe('')
   })
 
+  it('retries once when the entry is caught mid-rewrite', async () => {
+    const { sessionsDir } = await setup({ '123.json': '{"pid":12' })
+    const read = readStatus(sessionsDir, 123)
+    setTimeout(() => void writeFile(join(sessionsDir, '123.json'), JSON.stringify({ pid: 123, status: 'waiting' })), 5)
+    expect(await read).toBe('waiting')
+  })
+
   it('returns null for a missing, broken or non-object entry', async () => {
     const { sessionsDir } = await setup({ '2.json': '{"status":', '3.json': 'null', '4.json': '"waiting"' })
     for (const pid of [1, 2, 3, 4]) expect(await readStatus(sessionsDir, pid)).toBeNull()
