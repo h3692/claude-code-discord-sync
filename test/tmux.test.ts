@@ -41,13 +41,9 @@ describe('parseDialog', () => {
     expect(d?.options.map((o) => o.label)).toEqual(['Yes, and use auto mode', 'Yes, manually approve edits', 'Tell Claude what to change'])
   })
 
-  // The captured review screen ends right after "2. Cancel": nothing proves the list is complete.
-  it('rejects the review screen, whose list runs to the bottom of the pane', async () => {
-    expect(parseDialog(await screen('ask_two_review'))).toBeNull()
-  })
-
-  it('accepts the review screen once a footer shows below it', async () => {
-    const d = parseDialog((await screen('ask_two_review')) + '\nEnter to select · Esc to cancel')
+  // The review screen has no footer, but a painted blank row below "2. Cancel" shows the list ended on screen.
+  it('parses the review screen, which ends with a blank row instead of a footer', async () => {
+    const d = parseDialog(await screen('ask_two_review'))
     expect(d?.question).toBe('Ready to submit your answers?')
     expect(d?.options).toEqual([{ n: 1, label: 'Submit answers' }, { n: 2, label: 'Cancel' }])
   })
@@ -60,7 +56,9 @@ describe('parseDialog', () => {
   it('rejects a list cut off at the bottom, a numbering gap, and a missing cursor', async () => {
     const single = await screen('ask_single')
     const lines = single.split('\n')
-    expect(parseDialog(lines.slice(0, lines.findIndex((l) => l.includes('4. Chat about this')) + 1).join('\n'))).toBeNull()
+    const cut = lines.slice(0, lines.findIndex((l) => l.includes('4. Chat about this')) + 1).join('\n')
+    expect(parseDialog(cut)).toBeNull()
+    expect(parseDialog(cut + '\n')).toBeNull() // capture-pane's final newline is not a row
     expect(parseDialog(single.replace('  2. Blue', '  5. Blue'))).toBeNull()
     expect(parseDialog(single.replace('❯ 1. Red', '  1. Red'))).toBeNull()
     expect(parseDialog(single.replace('  2. Blue', '❯ 2. Blue'))).toBeNull()

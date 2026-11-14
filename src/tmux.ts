@@ -18,7 +18,7 @@ const exec = promisify(execFile)
 
 // Screen-scraped and acted on, so anything short of a complete, unambiguous list is null.
 export function parseDialog(screen: string): Dialog | null {
-  const lines = screen.split('\n')
+  const lines = screen.replace(/\n$/, '').split('\n')
   const isBlank = (i: number) => !lines[i].trim()
   const isSeparator = (i: number) => !isBlank(i) && SEPARATOR.test(lines[i])
   const last = lines.findLastIndex((l) => OPTION.test(l))
@@ -43,8 +43,7 @@ export function parseDialog(screen: string): Dialog | null {
     }
   }
   if (i <= last) return null
-  // A footer below the list proves it isn't cut off at the bottom of the pane.
-  while (i < lines.length && isBlank(i)) i++
+  // Any row below the list (footer or painted blank) proves it isn't cut off at the bottom of the pane.
   if (i >= lines.length) return null
   if (options.length < 2 || cursors !== 1 || options.some((o) => CHECKBOX.test(o.label))) return null
 
