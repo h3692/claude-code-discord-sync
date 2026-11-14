@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
-import { channelName, renderActivity, renderAgents, renderDone, renderPrompt, renderText } from './render.ts'
+import { channelName, renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderText } from './render.ts'
 import type { Agent, Tool } from './render.ts'
+import { parseDialog } from './tmux.ts'
 import type { Dialog } from './tmux.ts'
 import type { TranscriptEvent } from './transcript.ts'
 
@@ -45,6 +46,10 @@ export type Input =
   | { kind: 'button'; id: string; n: number; hash: string; status: string; screen: string | null } // fresh status+capture taken at click time
 
 const TOPIC = /^ccds\|(\d+)\|([^|]+)(?:\|ended:(\d+))?$/
+const EMBED_MAX = 4096
+const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!keys Down Enter` or `!type your answer`"
+const NO_TMUX = "Claude is waiting for you, but this session isn't in tmux — answer at the terminal."
+const CLOSED = 'That prompt is no longer open.'
 
 export function newMirror(
   s: { pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string },
@@ -96,8 +101,9 @@ export function step(state: State, input: Input): { state: State; actions: Actio
     s.agents = s.agents.map((a): Agent => (a.id === id ? { ...a, ...patch } : a))
     editPanel()
   }
-  const closeCard = (content: string) => {
-    if (s.card) actions.push({ type: 'edit', ref: s.card.ref, content, buttons: [] })
+  // Replaces the embed too, so the old prompt no longer looks answerable.
+  const closeCard = (content: string, title: string) => {
+    if (s.card) actions.push({ type: 'edit', ref: s.card.ref, content, embed: { title, description: s.card.dialog?.question ?? 'prompt' }, buttons: [] })
     s.card = null
   }
 
@@ -173,18 +179,67 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       }
       break
     case 'session_changed':
-      closeCard('-# 🔄 session restarted')
+      closeCard('-# 🔄 session restarted', '🔄 Session restarted')
       actions.push({ type: 'send', ref: ref(), content: '-# ── new conversation ──' })
       Object.assign(s, { sessionId: input.sessionId, tools: [], activityRefs: [], agents: [], agentsRef: null, rendered: {} })
       break
     case 'ended':
-      closeCard('-# 🔚 session ended')
+      closeCard('-# 🔚 session ended', '🔚 Session ended')
       actions.push({ type: 'end_channel', archive: s.archiveOnEnd })
       break
-    case 'status':
+    case 'status': {
       s.status = input.status
+      if (input.status !== 'waiting') {
+        if (s.card) closeCard(s.card.answered ? `✅ ${s.card.answered} — via Discord` : '✅ answered in terminal', '✅ Answered')
+        break
+      }
+      const parsed = input.screen ? parseDialog(input.screen) : null
+      // Discord allows 5 rows of 5 buttons.
+      const dialog = parsed && parsed.options.length <= 25 ? parsed : null
+      const buttons = (dialog?.options ?? []).map(({ n, label }): Button => {
+        const text = `${n}. ${label}`
+        const cut = /[\uD800-\uDBFF]/.test(text[78]) ? 78 : 79
+        return { id: `ccds:${n}:${dialog!.hash}`, label: text.length > 80 ? text.slice(0, cut) + '…' : text }
+      })
+      if (!s.card) {
+        let embed = { title: renderCard('').title, description: NO_TMUX }
+        if (input.screen) embed = renderCard(input.screen)
+        if (input.screen && !dialog) {
+          const over = embed.description.length + HINT.length - EMBED_MAX
+          if (over > 0) {
+            // Drop whole lines from the top of the fenced screen to make room for the hint.
+            const body = embed.description.slice(4, -4)
+            const nl = body.indexOf('\n', over + 2)
+            embed.description = `\`\`\`\n…${nl === -1 ? '' : body.slice(nl)}\n\`\`\``
+          }
+          embed.description += HINT
+        }
+        s.card = { ref: ref(), hash: dialog?.hash ?? null, dialog, answered: null }
+        actions.push({ type: 'send', ref: s.card.ref, content: `<@${s.userId}>`, embed, buttons, ping: true })
+      } else if (dialog && dialog.hash !== s.card.hash) {
+        s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: null }
+        actions.push({ type: 'edit', ref: s.card.ref, content: `<@${s.userId}>`, embed: renderCard(input.screen!), buttons })
+      }
       break
-    // 'message' and 'button' are handled by the inbound and cards work.
+    }
+    case 'button': {
+      const dialog = input.screen ? parseDialog(input.screen) : null
+      const option = dialog?.options.find((o) => o.n === input.n)
+      if (!s.card || input.status !== 'waiting' || !dialog || dialog.hash !== input.hash || !option) {
+        actions.push({ type: 'reply', replyTo: input.id, content: CLOSED })
+      } else if (s.card.answered !== null && s.card.hash === input.hash) {
+        actions.push({ type: 'reply', replyTo: input.id, content: 'Already sent.' })
+      } else {
+        s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: option.label }
+        actions.push({ type: 'keys', keys: [String(option.n)] })
+        actions.push({
+          type: 'edit', ref: s.card.ref, content: `⏳ sending ${option.n}. ${option.label}…`,
+          embed: { title: '⏳ Sending', description: dialog.question }, buttons: [],
+        })
+      }
+      break
+    }
+    // 'message' is handled by the inbound work.
   }
   return { state: s, actions }
 }

@@ -1,10 +1,12 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor,
 } from '../src/mirror.ts'
 import type { Action, State } from '../src/mirror.ts'
 import type { TranscriptEvent } from '../src/transcript.ts'
-import { renderActivity, renderAgents, renderDone, renderPrompt, renderText } from '../src/render.ts'
+import { renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderText } from '../src/render.ts'
+import { parseDialog } from '../src/tmux.ts'
 
 const cwd = '/Users/me/proj'
 const procStart = 'Thu Nov  3 10:00:01 2026'
@@ -169,7 +171,9 @@ describe('step: session changes', () => {
   it('closes an open card before the divider', () => {
     const s0 = { ...start().state, card: { ref: 'c1', hash: 'h', dialog: null, answered: null } }
     const b = step(s0, { kind: 'session_changed', sessionId: 's2' })
-    expect(b.actions[0]).toMatchObject({ type: 'edit', ref: 'c1', buttons: [] })
+    expect(b.actions[0]).toEqual({
+      type: 'edit', ref: 'c1', content: '-# 🔄 session restarted', embed: { title: '🔄 Session restarted', description: 'prompt' }, buttons: [],
+    })
     expect(b.actions[1]).toMatchObject({ type: 'send', content: '-# ── new conversation ──' })
   })
 
@@ -177,7 +181,7 @@ describe('step: session changes', () => {
     expect(step(start().state, { kind: 'ended' }).actions).toEqual([{ type: 'end_channel', archive: false }])
     const s0 = { ...start().state, archiveOnEnd: true, card: { ref: 'c1', hash: null, dialog: null, answered: null } }
     expect(step(s0, { kind: 'ended' }).actions).toEqual([
-      { type: 'edit', ref: 'c1', content: '-# 🔚 session ended', buttons: [] },
+      { type: 'edit', ref: 'c1', content: '-# 🔚 session ended', embed: { title: '🔚 Session ended', description: 'prompt' }, buttons: [] },
       { type: 'end_channel', archive: true },
     ])
   })
@@ -198,6 +202,166 @@ describe('step: session changes', () => {
       s = next
     }
     expect(s0).toEqual(snapshot)
+  })
+})
+
+const screen = (name: string) => readFileSync(new URL(`./fixtures/screens/${name}.txt`, import.meta.url), 'utf8')
+const waiting = (state: State, name: string | null) => step(state, { kind: 'status', status: 'waiting', screen: name && screen(name) })
+const click = (state: State, n: number, name: string | null, status = 'waiting', hash = name ? parseDialog(screen(name))!.hash : 'x') =>
+  step(state, { kind: 'button', id: 'i1', n, hash, status, screen: name && screen(name) })
+const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!keys Down Enter` or `!type your answer`"
+
+describe('step: prompt cards', () => {
+  it('pings with the screen and one button per option', () => {
+    const { state, actions } = waiting(start().state, 'approval_bash')
+    const d = parseDialog(screen('approval_bash'))!
+    expect(actions).toEqual([{
+      type: 'send', ref: state.card!.ref, content: '<@u1>', ping: true, embed: renderCard(screen('approval_bash')),
+      buttons: [
+        { id: `ccds:1:${d.hash}`, label: '1. Yes' },
+        { id: `ccds:2:${d.hash}`, label: '2. Yes, and always allow access to' },
+        { id: `ccds:3:${d.hash}`, label: '3. Yes, and switch to auto mode · auto mode handles these prompts for you' },
+        { id: `ccds:4:${d.hash}`, label: '4. No' },
+      ],
+    }])
+    expect(state.card).toEqual({ ref: state.card!.ref, hash: d.hash, dialog: d, answered: null })
+    expect(state.status).toBe('waiting')
+  })
+
+  it('does not repost or edit while the same prompt is redrawn', () => {
+    const a = waiting(start().state, 'plan_approval')
+    expect(waiting(a.state, 'plan_approval').actions).toEqual([])
+  })
+
+  it('falls back to a hint and no buttons when the options cannot be read', () => {
+    const { state, actions } = waiting(start().state, 'ask_multi')
+    const card = renderCard(screen('ask_multi'))
+    expect(actions).toEqual([{
+      type: 'send', ref: state.card!.ref, content: '<@u1>', ping: true, buttons: [],
+      embed: { title: card.title, description: card.description + HINT },
+    }])
+    expect(state.card).toMatchObject({ hash: null, dialog: null })
+  })
+
+  it('keeps the hint and stays within 4096 on a tall unreadable screen', () => {
+    const tall = Array.from({ length: 500 }, (_, i) => `row ${i} ${'.'.repeat(20)}`).join('\n')
+    const { actions } = step(start().state, { kind: 'status', status: 'waiting', screen: tall })
+    const { description } = (actions[0] as { embed: { description: string } }).embed
+    expect(description.length).toBeLessThanOrEqual(4096)
+    expect(description.endsWith('row 499 ' + '.'.repeat(20) + '\n```' + HINT)).toBe(true)
+    expect(description.startsWith('```\n…\nrow ')).toBe(true)
+    // Fits on its own, but not with the hint.
+    const near = Array.from({ length: 102 }, (_, i) => `${i}`.padEnd(39, '.')).join('\n')
+    expect(renderCard(near).description.length).toBeLessThanOrEqual(4096)
+    const fit = (step(start().state, { kind: 'status', status: 'waiting', screen: near }).actions[0] as { embed: { description: string } }).embed
+    expect(fit.description.length).toBeLessThanOrEqual(4096)
+    expect(fit.description.startsWith('```\n…\n')).toBe(true)
+    expect(fit.description.endsWith('101'.padEnd(39, '.') + '\n```' + HINT)).toBe(true)
+  })
+
+  it('says to answer at the terminal when the session is not in tmux', () => {
+    const { state, actions } = waiting(start().state, null)
+    expect(actions).toEqual([{
+      type: 'send', ref: state.card!.ref, content: '<@u1>', ping: true, buttons: [],
+      embed: { title: '🟡 Claude needs you', description: "Claude is waiting for you, but this session isn't in tmux — answer at the terminal." },
+    }])
+  })
+
+  it('edits the same card, without a new ping, for each step of a multi-question prompt', () => {
+    const a = waiting(start().state, 'ask_two')
+    const b = click(a.state, 1, 'ask_two')
+    const c = waiting(b.state, 'ask_two_q2')
+    const q2 = parseDialog(screen('ask_two_q2'))!
+    expect(c.actions).toEqual([{
+      type: 'edit', ref: a.state.card!.ref, content: '<@u1>', embed: renderCard(screen('ask_two_q2')),
+      buttons: q2.options.map((o) => ({ id: `ccds:${o.n}:${q2.hash}`, label: `${o.n}. ${o.label}` })),
+    }])
+    expect(c.state.card).toEqual({ ref: a.state.card!.ref, hash: q2.hash, dialog: q2, answered: null })
+    const d = waiting(click(c.state, 2, 'ask_two_q2').state, 'ask_two_review')
+    expect(d.actions).toHaveLength(1)
+    expect(d.actions[0]).toMatchObject({ type: 'edit', buttons: [{ label: '1. Submit answers' }, { label: '2. Cancel' }] })
+  })
+
+  it('adds buttons once an unreadable prompt becomes readable', () => {
+    const a = waiting(start().state, 'ask_multi')
+    const b = waiting(a.state, 'ask_single')
+    expect(b.actions).toEqual([expect.objectContaining({ type: 'edit', ref: a.state.card!.ref, embed: renderCard(screen('ask_single')) })])
+    expect(b.state.card!.hash).toBe(parseDialog(screen('ask_single'))!.hash)
+    // Becoming unreadable again changes nothing.
+    expect(waiting(b.state, 'ask_multi').actions).toEqual([])
+  })
+
+  it('truncates long labels to 80 and gives up on buttons past 25 options', () => {
+    const long = `Do it?\n❯ 1. ${'a'.repeat(100)}\n  2. No\nEsc to cancel`
+    const a = step(start().state, { kind: 'status', status: 'waiting', screen: long })
+    const [first] = (a.actions[0] as { buttons: { label: string }[] }).buttons
+    expect(first.label).toBe(`1. ${'a'.repeat(76)}…`)
+    const many = `Pick\n${Array.from({ length: 26 }, (_, i) => `${i ? '  ' : '❯ '}${i + 1}. opt ${i + 1}`).join('\n')}\nEsc to cancel`
+    expect(parseDialog(many)!.options).toHaveLength(26)
+    const b = step(start().state, { kind: 'status', status: 'waiting', screen: many })
+    expect(b.actions[0]).toMatchObject({ type: 'send', buttons: [] })
+    expect((b.actions[0] as { embed: { description: string } }).embed.description.endsWith(HINT)).toBe(true)
+    expect(b.state.card!.hash).toBeNull()
+  })
+
+  it('finalizes the card when answered in the terminal', () => {
+    const a = waiting(start().state, 'approval_bash')
+    const b = step(a.state, { kind: 'status', status: 'busy', screen: null })
+    expect(b.actions).toEqual([{
+      type: 'edit', ref: a.state.card!.ref, content: '✅ answered in terminal',
+      embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [],
+    }])
+    expect(b.state).toMatchObject({ card: null, status: 'busy' })
+    expect(step(b.state, { kind: 'status', status: 'idle', screen: null }).actions).toEqual([])
+  })
+
+  it('sends the chosen key from a button, then finalizes as answered via Discord', () => {
+    const a = waiting(start().state, 'approval_bash')
+    const b = click(a.state, 4, 'approval_bash')
+    expect(b.actions).toEqual([
+      { type: 'keys', keys: ['4'] },
+      { type: 'edit', ref: a.state.card!.ref, content: '⏳ sending 4. No…', embed: { title: '⏳ Sending', description: 'Do you want to proceed?' }, buttons: [] },
+    ])
+    expect(b.state.card!.answered).toBe('No')
+    expect(waiting(b.state, 'approval_bash').actions).toEqual([])
+    const c = step(b.state, { kind: 'status', status: 'busy', screen: null })
+    expect(c.actions).toEqual([{
+      type: 'edit', ref: a.state.card!.ref, content: '✅ No — via Discord',
+      embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [],
+    }])
+  })
+
+  it('does not send twice on a double click', () => {
+    const b = click(waiting(start().state, 'approval_bash').state, 1, 'approval_bash')
+    expect(click(b.state, 1, 'approval_bash').actions).toEqual([{ type: 'reply', replyTo: 'i1', content: 'Already sent.' }])
+  })
+
+  it('rejects a button for a prompt that is no longer open', () => {
+    const closed = [{ type: 'reply', replyTo: 'i1', content: 'That prompt is no longer open.' }]
+    const open = waiting(start().state, 'ask_two').state
+    const q2 = parseDialog(screen('ask_two_q2'))!.hash
+    expect(click(start().state, 1, 'ask_two').actions).toEqual(closed) // no card
+    expect(click(open, 1, 'ask_two', 'busy').actions).toEqual(closed)
+    expect(click(open, 1, null, 'waiting', 'abc').actions).toEqual(closed)
+    expect(click(open, 1, 'ask_two_q2', 'waiting', parseDialog(screen('ask_two'))!.hash).actions).toEqual(closed) // screen moved on
+    expect(click(open, 1, 'ask_multi', 'waiting', q2).actions).toEqual(closed) // unreadable now
+    expect(click(open, 9, 'ask_two').actions).toEqual(closed)
+    expect(click(open, 1, 'ask_two').actions[0]).toEqual({ type: 'keys', keys: ['1'] })
+  })
+
+  it('never changes the state it was given', () => {
+    let s = start().state
+    for (const input of [
+      { kind: 'status', status: 'waiting', screen: screen('ask_two') },
+      { kind: 'button', id: 'i1', n: 1, hash: parseDialog(screen('ask_two'))!.hash, status: 'waiting', screen: screen('ask_two') },
+      { kind: 'status', status: 'waiting', screen: screen('ask_two_q2') },
+      { kind: 'status', status: 'busy', screen: null },
+    ] as const) {
+      const before = structuredClone(s)
+      const next = step(s, input as never).state
+      expect(s).toEqual(before)
+      s = next
+    }
   })
 })
 
