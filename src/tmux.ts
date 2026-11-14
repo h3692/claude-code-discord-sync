@@ -7,6 +7,7 @@ export type Dialog = { question: string; options: { n: number; label: string }[]
 
 const OPTION = /^\s*(❯\s+)?(\d+)\.\s+(.+)$/
 const SEPARATOR = /^[\s─╌▔]+$/
+const BORDER = /^ *─{10,} *$/
 const CHECKBOX = /^\[[ ✔xX✓]\]/
 const PANE = /^%\d+$/
 const KEYS: Record<string, string> = {
@@ -51,14 +52,18 @@ export function parseDialog(screen: string): Dialog | null {
   while (q >= 0 && (isBlank(q) || isSeparator(q))) q--
   if (q < 0) return null
   const question = lines[q].trim()
-  const hash = createHash('sha256').update(question + '\n' + options.map((o) => o.label).join('\n')).digest('hex').slice(0, 12)
+  // Hash everything shown from the dialog's top border down, so a different command gets a different hash.
+  let top = start - 1
+  while (top >= 0 && !BORDER.test(lines[top])) top--
+  const body = lines.slice(top + 1, last + 1).map((l) => l.trim()).filter(Boolean).join('\n')
+  const hash = createHash('sha256').update(body).digest('hex').slice(0, 12)
   return { question, options, hash }
 }
 
 export function parseKeys(args: string): string[] | null {
   const tokens = args.split(/\s+/).filter(Boolean)
   if (!tokens.length || tokens.length > 20) return null
-  const keys = tokens.map((t) => (/^\d$/.test(t) ? t : KEYS[t.toLowerCase()]))
+  const keys = tokens.map((t) => (/^\d$/.test(t) ? t : Object.hasOwn(KEYS, t.toLowerCase()) ? KEYS[t.toLowerCase()] : undefined))
   return keys.every(Boolean) ? keys : null
 }
 
@@ -97,11 +102,14 @@ export async function checkPane(pane: string, pid: number, procStart: string): P
     const start = (await exec('ps', ['-o', 'lstart=', '-p', String(pid)], { env })).stdout
     const squash = (s: string) => s.trim().replace(/\s+/g, ' ')
     if (squash(start) !== squash(procStart)) return 'process start time does not match (pid reused?)'
-    const tty = (await exec('ps', ['-o', 'tty=', '-p', String(pid)])).stdout.trim()
+    const [tty, stat] = (await exec('ps', ['-o', 'tty=,stat=', '-p', String(pid)], { env })).stdout.trim().split(/\s+/)
     // display-message prints nothing (and exits 0) for a pane that no longer exists.
     const [paneTty, inMode] = (await tmux('display-message', '-p', '-t', pane, '#{pane_tty} #{pane_in_mode}')).stdout.trim().split(' ')
     if (!paneTty) return 'tmux pane not found'
     if (basename(paneTty) !== tty) return 'tmux pane is not running this session'
+    // A stopped or background Claude would leave the paste to whatever owns the terminal, usually the shell.
+    if (stat.includes('T')) return 'Claude Code is suspended (Ctrl-Z)'
+    if (!stat.includes('+')) return 'Claude Code is not in the foreground of its terminal'
     if (inMode !== '0') return 'tmux pane is in copy mode'
     return null
   } catch (e) {
