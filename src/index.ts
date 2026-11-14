@@ -205,7 +205,16 @@ function main(): void {
     for (const a of actions) {
       switch (a.type) {
         case 'create_channel':
-          e.channel = await guild.channels.create({ name: a.name, type: ChannelType.GuildText, parent: sessionsCat.id, topic: a.topic })
+          // Everything else for this session waits on the channel, so retry a transient failure (~30s total).
+          for (let i = 0; !e.channel; i++) {
+            try {
+              e.channel = await guild.channels.create({ name: a.name, type: ChannelType.GuildText, parent: sessionsCat.id, topic: a.topic })
+            } catch (err) {
+              if (i >= 4) throw err
+              log(`create channel failed (attempt ${i + 1}):`, (err as Error).message)
+              await new Promise((r) => setTimeout(r, 2000 * 2 ** i))
+            }
+          }
           log(`created channel ${a.name} for ${e.pid}`)
           break
         case 'rename_channel':
@@ -258,7 +267,8 @@ function main(): void {
   }
 
   function track(s: Session, channel: TextChannel | null, from: Entry['from']): Entry {
-    const { state, actions } = newMirror(s, userId)
+    // Non-interactive (background) sessions are mirrored read-only.
+    const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null }, userId)
     const e: Entry = { state, pid: s.pid, procStart: s.procStart, channel, outbox: new Outbox(), transcript: null, offset: 0, from }
     mirrors.set(state.key, e)
     // An existing channel replaces create_channel; its current name stops a needless rename.
