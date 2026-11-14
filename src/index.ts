@@ -414,7 +414,9 @@ function main(): void {
       return
     }
     const channel = message.channel
-    if (channel.type !== ChannelType.GuildText || channel.parentId !== endedCat?.id) return
+    // An ended channel may sit outside Ended Sessions if that category was full; its topic still says ended.
+    if (channel.type !== ChannelType.GuildText) return
+    if (channel.parentId !== endedCat?.id && parseTopic(channel.topic)?.endedAt == null) return
     if (message.content.trim().toLowerCase() === '!archive') {
       void queue(channel.id, async () => {
         const refusal = await archiveChannel(channel)

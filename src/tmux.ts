@@ -65,7 +65,7 @@ export function parseKeys(args: string): string[] | null {
   const tokens = args.split(/\s+/).filter(Boolean)
   if (!tokens.length || tokens.length > 20) return null
   const keys = tokens.map((t) => (/^\d$/.test(t) ? t : Object.hasOwn(KEYS, t.toLowerCase()) ? KEYS[t.toLowerCase()] : undefined))
-  return keys.every(Boolean) ? keys : null
+  return keys.every((k): k is string => k !== undefined) ? keys : null
 }
 
 // Strips ESC and other controls so pasted text cannot end the bracketed paste and inject keys.
