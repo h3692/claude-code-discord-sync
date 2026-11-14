@@ -1,0 +1,20 @@
+{
+  "name": "claude-code-discord-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mirror and control local Claude Code sessions from Discord",
+  "type": "module",
+  "engines": {
+    "node": ">=24.12"
+  },
+  "scripts": {
+    "start": "node src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "discord.js": "14.28.1"
+  },
+  "devDependencies": {
+    "vitest": "5.1.0"
+  }
+}
