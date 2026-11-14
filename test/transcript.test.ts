@@ -37,6 +37,15 @@ describe('parseLine', () => {
     }
   })
 
+  it('drops lines timestamped before `since`, keeping later and untimestamped ones', () => {
+    const at = (timestamp: string) => JSON.stringify({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: 'hi' }, timestamp })
+    const since = Date.parse('2026-11-01T00:00:01.000Z')
+    expect(parseLine(at('2026-11-01T00:00:00.999Z'), since)).toEqual([])
+    expect(parseLine(at('2026-11-01T00:00:01.000Z'), since)).toEqual([{ kind: 'prompt', text: 'hi' }])
+    expect(parseLine(at('2026-11-01T00:00:00.999Z'))).toEqual([{ kind: 'prompt', text: 'hi' }])
+    expect(parseLine('{"type":"ai-title","aiTitle":"Placeholder title"}', since)).toEqual([{ kind: 'title', title: 'Placeholder title' }])
+  })
+
   it('parses a stopped notification and a queued prompt given as text blocks', () => {
     const stopped = { type: 'attachment', attachment: { type: 'queued_command', commandMode: 'task-notification', prompt: '<task-notification>\n<tool-use-id>toolu_x</tool-use-id>\n<status>stopped</status>\n</task-notification>' } }
     expect(parseLine(JSON.stringify(stopped))).toEqual([{ kind: 'agent_end', id: 'toolu_x', status: 'stopped' }])

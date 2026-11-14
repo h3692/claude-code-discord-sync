@@ -53,12 +53,22 @@ export function parseDialog(screen: string): Dialog | null {
   if (q < 0) return null
   const question = lines[q].trim()
   // Hash everything shown from the dialog's top border down, so a different command gets a different hash.
-  let top = start - 1
-  while (top >= 0 && !BORDER.test(lines[top])) top--
-  // The ❯ cursor is dropped so arrow-key navigation doesn't look like a new prompt.
-  const body = lines.slice(top + 1, last + 1).map((l) => l.trim().replace(/^❯\s*/, '')).filter(Boolean).join('\n')
-  const hash = createHash('sha256').update(body).digest('hex').slice(0, 12)
-  return { question, options, hash }
+  // The highest border, not the nearest: plan approval draws one between the plan and the options.
+  const top = lines.findIndex((l) => BORDER.test(l))
+  return { question, options, hash: hashBody(lines.slice(top < start ? top + 1 : 0, last + 1)) }
+}
+
+// Identifies a prompt that parseDialog can't read: the dialog region below the highest border, or the last 25 non-blank lines.
+export function screenHash(screen: string): string {
+  const lines = screen.replace(/\n$/, '').split('\n')
+  const top = lines.findIndex((l) => BORDER.test(l))
+  return hashBody(top < 0 ? lines.filter((l) => l.trim()).slice(-25) : lines.slice(top + 1))
+}
+
+// The ❯ cursor is dropped so arrow-key navigation doesn't look like a new prompt.
+function hashBody(lines: string[]): string {
+  const body = lines.map((l) => l.trim().replace(/^❯\s*/, '')).filter(Boolean).join('\n')
+  return createHash('sha256').update(body).digest('hex').slice(0, 12)
 }
 
 export function parseKeys(args: string): string[] | null {

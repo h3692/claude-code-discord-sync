@@ -15,10 +15,12 @@ const AGENT_STATUSES = ['completed', 'failed', 'stopped']
 
 // Transcript lines are an undocumented format, so the parsed JSON stays loosely typed.
 // Any shape we did not expect throws inside and is treated as "no events".
-export function parseLine(line: string): TranscriptEvent[] {
+// since (epoch ms): drop lines written before it; lines without a timestamp (ai-title, …) always pass.
+export function parseLine(line: string, since?: number): TranscriptEvent[] {
   try {
     const entry = JSON.parse(line)
     if (entry.isSidechain) return []
+    if (since !== undefined && typeof entry.timestamp === 'string' && Date.parse(entry.timestamp) < since) return []
     switch (entry.type) {
       case 'user': return parseUser(entry)
       case 'attachment': return parseQueued(entry.attachment)

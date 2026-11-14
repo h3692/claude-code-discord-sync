@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
-import { capture, checkPane, parseDialog, parseKeys, pasteText, sanitizePaste, sendKeys } from '../src/tmux.ts'
+import { capture, checkPane, parseDialog, parseKeys, pasteText, sanitizePaste, screenHash, sendKeys } from '../src/tmux.ts'
 
 const screen = (name: string) => readFile(new URL(`./fixtures/screens/${name}.txt`, import.meta.url), 'utf8')
 
@@ -92,6 +92,17 @@ describe('parseDialog', () => {
     expect(parseDialog(bash.replace('\n touch probe.txt\n', '\n rm -rf ~/important\n'))?.hash).not.toBe(parseDialog(bash)?.hash)
   })
 
+  // Plan approval draws a ─ rule between the plan and the options, so the nearest border would leave the plan out.
+  it('hashes from the highest border, so a different plan gets a different hash', async () => {
+    const plan = await screen('plan_approval')
+    const d = parseDialog(plan)
+    const other = parseDialog(plan.replace('Create hello.txt in the working directory containing hi.', 'Delete every file in the home directory.'))
+    expect(other?.options).toEqual(d?.options)
+    expect(other?.hash).not.toBe(d?.hash)
+    expect(parseDialog(plan.replace('/plan to preview', '/plan to look'))?.hash).toBe(d?.hash)
+    expect(parseDialog('scrolled text\n' + plan)?.hash).toBe(d?.hash)
+  })
+
   it('ignores a numbered list in the transcript above the dialog', async () => {
     const d = parseDialog('⏺ Steps:\n  1. one\n  2. two\n  3. three\nDone.\n' + (await screen('approval_bash')))
     expect(d?.options).toHaveLength(4)
@@ -100,6 +111,27 @@ describe('parseDialog', () => {
   it('returns null for a numbered list with no dialog', () => {
     expect(parseDialog('⏺ Steps:\n  1. one\n  2. two\nDone.')).toBeNull()
     expect(parseDialog('')).toBeNull()
+  })
+})
+
+describe('screenHash', () => {
+  it('hashes the dialog region below the highest border, ignoring the cursor, redraw whitespace and scrollback', async () => {
+    const multi = await screen('ask_multi')
+    const h = screenHash(multi)
+    expect(h).toMatch(/^[0-9a-f]{12}$/)
+    expect(screenHash(multi.replace('❯ 1. [ ] Cheese', '  1. [ ] Cheese').replace('  2. [ ] Olives', '❯ 2. [ ] Olives'))).toBe(h)
+    expect(screenHash(multi.replace('Pick toppings\n', 'Pick toppings    \n'))).toBe(h)
+    expect(screenHash(multi.replace('⏺ You picked Blue.', '⏺ You chose Blue.'))).toBe(h)
+    expect(screenHash('scrolled text\n' + multi)).toBe(h)
+    expect(screenHash(multi.replace('1. [ ] Cheese', '1. [✔] Cheese'))).not.toBe(h)
+    expect(screenHash(await screen('trust'))).not.toBe(h)
+  })
+
+  it('hashes the last 25 non-blank lines when there is no border', () => {
+    const rows = Array.from({ length: 40 }, (_, i) => `row ${i}`)
+    const h = screenHash(rows.join('\n'))
+    expect(screenHash(['changed', ...rows.slice(1)].join('\n\n'))).toBe(h)
+    expect(screenHash([...rows.slice(0, 15), 'changed', ...rows.slice(16)].join('\n'))).not.toBe(h)
   })
 })
 

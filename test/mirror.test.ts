@@ -6,7 +6,7 @@ import {
 import type { Action, State } from '../src/mirror.ts'
 import type { TranscriptEvent } from '../src/transcript.ts'
 import { renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderText } from '../src/render.ts'
-import { parseDialog } from '../src/tmux.ts'
+import { parseDialog, screenHash } from '../src/tmux.ts'
 
 const cwd = '/Users/me/proj'
 const procStart = 'Thu Nov  3 10:00:01 2026'
@@ -246,7 +246,7 @@ describe('step: prompt cards', () => {
         { id: `ccds:4:${d.hash}`, label: '4. No' },
       ],
     }])
-    expect(state.card).toEqual({ ref: state.card!.ref, hash: d.hash, dialog: d, answered: null, repeats: 0 })
+    expect(state.card).toEqual({ ref: state.card!.ref, hash: d.hash, screenHash: screenHash(screen('approval_bash')), dialog: d, answered: null, repeats: 0 })
     expect(state.status).toBe('waiting')
   })
 
@@ -304,7 +304,7 @@ describe('step: prompt cards', () => {
       type: 'edit', ref: a.state.card!.ref, content: '<@u1>', embed: renderCard(screen('ask_two_q2')),
       buttons: q2.options.map((o) => ({ id: `ccds:${o.n}:${q2.hash}`, label: `${o.n}. ${o.label}` })),
     }])
-    expect(c.state.card).toEqual({ ref: a.state.card!.ref, hash: q2.hash, dialog: q2, answered: null, repeats: 0 })
+    expect(c.state.card).toEqual({ ref: a.state.card!.ref, hash: q2.hash, screenHash: screenHash(screen('ask_two_q2')), dialog: q2, answered: null, repeats: 0 })
   })
 
   it('finalizes a card answered via Discord and pings a new one when the next prompt appears', () => {
@@ -318,7 +318,7 @@ describe('step: prompt cards', () => {
       { type: 'send', ref: c.state.card!.ref, content: '<@u1>', ping: true, embed: renderCard(screen('ask_two_q2')),
         buttons: q2.options.map((o) => ({ id: `ccds:${o.n}:${q2.hash}`, label: `${o.n}. ${o.label}` })) },
     ])
-    expect(c.state.card).toEqual({ ref: c.state.card!.ref, hash: q2.hash, dialog: q2, answered: null, repeats: 0 })
+    expect(c.state.card).toEqual({ ref: c.state.card!.ref, hash: q2.hash, screenHash: screenHash(screen('ask_two_q2')), dialog: q2, answered: null, repeats: 0 })
     expect(c.state.card!.ref).not.toBe(a.state.card!.ref)
     const d = waiting(click(c.state, 2, 'ask_two_q2').state, 'ask_two_review')
     expect(d.actions).toHaveLength(2)
@@ -333,9 +333,6 @@ describe('step: prompt cards', () => {
       expect(r.actions).toEqual([])
       s = r.state
     }
-    // An unreadable redraw breaks the run.
-    s = waiting(s, 'ask_multi').state
-    for (let i = 0; i < 2; i++) s = waiting(s, 'approval_bash').state
     const r = waiting(s, 'approval_bash')
     expect(r.actions).toEqual([
       { type: 'edit', ref: a.state.card!.ref, content: '✅ Yes — via Discord', embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [] },
@@ -357,8 +354,69 @@ describe('step: prompt cards', () => {
     const b = waiting(a.state, 'ask_single')
     expect(b.actions).toEqual([expect.objectContaining({ type: 'edit', ref: a.state.card!.ref, embed: renderCard(screen('ask_single')) })])
     expect(b.state.card!.hash).toBe(parseDialog(screen('ask_single'))!.hash)
-    // Becoming unreadable again changes nothing.
+  })
+
+  it('edits an unanswered card to the fallback, without a ping or stale buttons, when its prompt becomes unreadable', () => {
+    const a = waiting(start().state, 'ask_single')
+    const b = waiting(a.state, 'ask_multi')
+    const card = renderCard(screen('ask_multi'))
+    expect(b.actions).toEqual([{
+      type: 'edit', ref: a.state.card!.ref, content: '<@u1>', embed: { title: card.title, description: card.description + HINT }, buttons: [],
+    }])
+    expect(b.state.card).toEqual({ ref: a.state.card!.ref, hash: null, screenHash: screenHash(screen('ask_multi')), dialog: null, answered: null, repeats: 0 })
     expect(waiting(b.state, 'ask_multi').actions).toEqual([])
+  })
+
+  // Red-team repro: the card stayed at "⏳ sending 1. Small…" because only a parsed dialog moved it on.
+  it('finalizes a card answered by button and pings a fallback card when the next prompt is unreadable', () => {
+    const a = waiting(start().state, 'ask_two')
+    const b = click(a.state, 1, 'ask_two')
+    const c = waiting(b.state, 'ask_multi')
+    const card = renderCard(screen('ask_multi'))
+    expect(c.actions).toEqual([
+      { type: 'edit', ref: a.state.card!.ref, content: '✅ Small — via Discord', embed: { title: '✅ Answered', description: 'Pick a size' }, buttons: [] },
+      { type: 'send', ref: c.state.card!.ref, content: '<@u1>', ping: true, buttons: [], embed: { title: card.title, description: card.description + HINT } },
+    ])
+    let s = c.state
+    for (let i = 0; i < 5; i++) {
+      const r = waiting(s, 'ask_multi')
+      expect(r.actions).toEqual([])
+      s = r.state
+    }
+  })
+
+  it('moves a fallback card answered with !keys on to a new card when the screen changes or the prompt repeats', () => {
+    const a = waiting(start().state, 'ask_multi')
+    const b = say(a.state, '!keys 1')
+    const c = waiting(b.state, 'trust')
+    expect(c.actions).toEqual([
+      { type: 'edit', ref: a.state.card!.ref, content: '✅ `!keys 1` — via Discord', embed: { title: '✅ Answered', description: 'prompt' }, buttons: [] },
+      expect.objectContaining({ type: 'send', ref: c.state.card!.ref, ping: true, buttons: [] }),
+    ])
+    expect(c.state.card).toMatchObject({ hash: null, screenHash: screenHash(screen('trust')), answered: null })
+    let s = b.state
+    for (let i = 0; i < 2; i++) {
+      const r = waiting(s, 'ask_multi')
+      expect(r.actions).toEqual([])
+      s = r.state
+    }
+    expect(waiting(s, 'ask_multi').actions).toEqual([
+      expect.objectContaining({ type: 'edit', ref: a.state.card!.ref, content: '✅ `!keys 1` — via Discord' }),
+      expect.objectContaining({ type: 'send', ping: true }),
+    ])
+  })
+
+  it('does not repost an unreadable prompt when only its cursor moves or it is redrawn', () => {
+    const multi = screen('ask_multi')
+    const a = waiting(start().state, 'ask_multi')
+    const moved = multi.replace('❯ 1. [ ] Cheese', '  1. [ ] Cheese').replace('  2. [ ] Olives', '❯ 2. [ ] Olives')
+    for (const shown of [multi, moved, multi.replace('Pick toppings\n', 'Pick toppings   \n')]) {
+      expect(step(a.state, { kind: 'status', status: 'waiting', screen: shown }).actions).toEqual([])
+    }
+    const answered = say(a.state, '!keys Down').state
+    expect(step(answered, { kind: 'status', status: 'waiting', screen: moved }).actions).toEqual([])
+    // A failed capture says nothing about the prompt.
+    expect(waiting(a.state, null).actions).toEqual([])
   })
 
   it('truncates long labels to 80 and gives up on buttons past 25 options', () => {
@@ -484,6 +542,17 @@ describe('step: messages from Discord', () => {
         { type: 'reply', replyTo: 'm1', content: '🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.' },
       ])
     }
+  })
+
+  it('strips only leading invisible characters, so emoji sequences and joiners inside the text survive', () => {
+    const family = '\u{1F468}\u200d\u{1F469}\u200d\u{1F467} hi'
+    const a = say(start().state, family)
+    expect(a.actions).toEqual([{ type: 'paste', text: family, replyTo: 'm1' }])
+    expect(events(a.state, { kind: 'prompt', text: family }).actions).toEqual([])
+    const zwnj = 'می\u200cخواهم'
+    expect(say(start().state, `\u200b ${zwnj}`).actions).toEqual([{ type: 'paste', text: zwnj, replyTo: 'm1' }])
+    const content = "🚫 Messages starting with `!` aren't sent — Claude Code would run them as shell commands. Commands: `!keys`, `!type`, `!archive`."
+    expect(say(start().state, '\ufeff ！id').actions).toEqual([{ type: 'reply', replyTo: 'm1', content }])
   })
 
   it('does not count cursor-only !keys as an answer', () => {

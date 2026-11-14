@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { channelName, renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderText } from './render.ts'
 import type { Agent, Tool } from './render.ts'
-import { parseDialog, parseKeys, sanitizePaste } from './tmux.ts'
+import { parseDialog, parseKeys, sanitizePaste, screenHash } from './tmux.ts'
 import type { Dialog } from './tmux.ts'
 import type { TranscriptEvent } from './transcript.ts'
 
@@ -34,8 +34,8 @@ export type State = {
   agentsRef: string | null
   agentIds: string[] // every Agent tool_use id ever seen this session (so tool_end/agent_end map to agents)
   rendered: Record<string, string> // last content sent per activity/agents ref, to skip no-op edits
-  // repeats: consecutive polls still showing the answered dialog
-  card: { ref: string; hash: string | null; dialog: Dialog | null; answered: string | null; repeats: number } | null
+  // screenHash: tells unreadable prompts apart; repeats: consecutive polls still showing the answered prompt
+  card: { ref: string; hash: string | null; screenHash: string | null; dialog: Dialog | null; answered: string | null; repeats: number } | null
   pendingEcho: string[] // normalized texts pasted from Discord, awaiting their transcript echo (cap 20)
   archiveOnEnd: boolean
 }
@@ -57,8 +57,9 @@ const READ_ONLY = "👀 Read-only: this session isn't running in tmux."
 const BAD_KEYS = '⌨️ Allowed keys: digits 0-9, Up, Down, Left, Right, Enter, Escape, Tab, BTab, Space, BSpace (max 20). Example: `!keys Down Enter`'
 
 // Claude Code records a pasted prompt as the sanitized paste, trimmed; both sides of the echo match use this.
-// Format characters (zero-width space, BOM, …) are dropped too, so they can't hide a leading `!`.
-const normalize = (text: string) => sanitizePaste(text).replace(/\p{Cf}/gu, '').trim()
+// Leading format characters (zero-width space, BOM, …) are dropped too, so they can't hide a leading `!`;
+// ones inside the text are kept, since emoji sequences and some scripts need joiners.
+const normalize = (text: string) => sanitizePaste(text).replace(/^[\s\p{Cf}]+/u, '').trim()
 // Fullwidth and small exclamation marks count as `!`.
 const SHELL = /^[!！﹗]/
 // Polls after an answer that may still show the old screen; the same prompt past that was asked again.
@@ -223,32 +224,37 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         const cut = /[\uD800-\uDBFF]/.test(text[78]) ? 78 : 79
         return { id: `ccds:${n}:${dialog!.hash}`, label: text.length > 80 ? text.slice(0, cut) + '…' : text }
       })
+      let embed = { title: renderCard('').title, description: s.pane ? NO_SCREEN : NO_TMUX }
+      if (input.screen) embed = renderCard(input.screen)
+      if (input.screen && !dialog) {
+        const over = embed.description.length + HINT.length - EMBED_MAX
+        if (over > 0) {
+          // Drop whole lines from the top of the fenced screen to make room for the hint.
+          const body = embed.description.slice(4, -4)
+          const nl = body.indexOf('\n', over + 2)
+          embed.description = `\`\`\`\n…${nl === -1 ? '' : body.slice(nl)}\n\`\`\``
+        }
+        embed.description += HINT
+      }
+      const shown = input.screen ? screenHash(input.screen) : null
       if (s.card) {
-        const repeats = s.card.answered && dialog?.hash === s.card.hash ? s.card.repeats + 1 : 0
-        if (s.card.answered && ((dialog && dialog.hash !== s.card.hash) || repeats >= REPEATS)) {
+        // A readable prompt is compared by its dialog hash, an unreadable one by its screen; a failed capture tells nothing.
+        const same = dialog ? dialog.hash === s.card.hash : shown !== null && shown === s.card.screenHash
+        const changed = !same && (dialog !== null || shown !== null)
+        const repeats = s.card.answered && same ? s.card.repeats + 1 : 0
+        if (s.card.answered && (changed || repeats >= REPEATS)) {
           // A new prompt after an answer from Discord gets its own card and ping.
           closeCard(`✅ ${s.card.answered} — via Discord`, '✅ Answered')
-        } else if (dialog && dialog.hash !== s.card.hash) {
-          s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: null, repeats: 0 }
-          actions.push({ type: 'edit', ref: s.card.ref, content: `<@${s.userId}>`, embed: renderCard(input.screen!), buttons })
+        } else if (changed) {
+          // Buttons are replaced too, so an unreadable prompt doesn't keep the old prompt's.
+          s.card = { ref: s.card.ref, hash: dialog?.hash ?? null, screenHash: shown, dialog, answered: null, repeats: 0 }
+          actions.push({ type: 'edit', ref: s.card.ref, content: `<@${s.userId}>`, embed, buttons })
         } else {
           s.card = { ...s.card, repeats }
         }
       }
       if (!s.card) {
-        let embed = { title: renderCard('').title, description: s.pane ? NO_SCREEN : NO_TMUX }
-        if (input.screen) embed = renderCard(input.screen)
-        if (input.screen && !dialog) {
-          const over = embed.description.length + HINT.length - EMBED_MAX
-          if (over > 0) {
-            // Drop whole lines from the top of the fenced screen to make room for the hint.
-            const body = embed.description.slice(4, -4)
-            const nl = body.indexOf('\n', over + 2)
-            embed.description = `\`\`\`\n…${nl === -1 ? '' : body.slice(nl)}\n\`\`\``
-          }
-          embed.description += HINT
-        }
-        s.card = { ref: ref(), hash: dialog?.hash ?? null, dialog, answered: null, repeats: 0 }
+        s.card = { ref: ref(), hash: dialog?.hash ?? null, screenHash: shown, dialog, answered: null, repeats: 0 }
         actions.push({ type: 'send', ref: s.card.ref, content: `<@${s.userId}>`, embed, buttons, ping: true })
       }
       break
@@ -261,7 +267,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       } else if (s.card.answered !== null && s.card.hash === input.hash) {
         actions.push({ type: 'reply', replyTo: input.id, content: 'Already sent.' })
       } else {
-        s.card = { ref: s.card.ref, hash: dialog.hash, dialog, answered: option.label, repeats: 0 }
+        s.card = { ref: s.card.ref, hash: dialog.hash, screenHash: screenHash(input.screen!), dialog, answered: option.label, repeats: 0 }
         actions.push({ type: 'keys', keys: [String(option.n)], hash: dialog.hash })
         actions.push({
           type: 'edit', ref: s.card.ref, content: `⏳ sending ${option.n}. ${option.label}…`,
@@ -280,7 +286,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       }
       if (!text) break
       if (SHELL.test(text)) {
-        const [, cmd, args = ''] = text.match(/^!(\w+)(?:\s+([\s\S]*))?$/) ?? []
+        const [, cmd, args = ''] = text.match(/^!(\w+)(?:\s[\s\p{Cf}]*([\s\S]*))?$/u) ?? []
         switch (cmd?.toLowerCase()) {
           case 'keys': {
             const keys = parseKeys(args)
