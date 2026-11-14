@@ -397,6 +397,8 @@ function main(): void {
       }
       if (s.status !== e.state.status || s.status === 'waiting') {
         const screen = s.status === 'waiting' && e.state.pane ? await capture(e.state.pane).catch(() => null) : null
+        // The prompt may have closed while we captured (e.g. just answered); a stale screen would ping a bogus card.
+        if (screen !== null && (await readStatus(sessionsDir, e.pid)) !== 'waiting') continue
         apply(e, { kind: 'status', status: s.status, screen })
       }
     }
