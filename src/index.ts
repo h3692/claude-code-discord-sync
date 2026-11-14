@@ -1,17 +1,17 @@
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Client, EmbedBuilder, Events, GatewayIntentBits, Message, MessageFlags,
 } from 'discord.js'
 import type { ButtonInteraction, CategoryChannel, Guild, TextChannel } from 'discord.js'
-import { endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor } from './mirror.ts'
+import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor } from './mirror.ts'
 import type { Action, Button, Input, State } from './mirror.ts'
 import { renderEnded } from './render.ts'
-import { listSessions } from './sessions.ts'
+import { listSessions, readStatus } from './sessions.ts'
 import type { Session } from './sessions.ts'
-import { capture, checkPane, pasteText, sendKeys } from './tmux.ts'
+import { capture, checkPane, parseDialog, pasteText, sendKeys } from './tmux.ts'
 import { parseLine, readAppended } from './transcript.ts'
 
 const log = (...parts: unknown[]) => console.error(new Date().toISOString(), ...parts)
@@ -83,6 +83,21 @@ export function serialQueue(): (key: string, fn: () => Promise<unknown>) => Prom
   }
 }
 
+type Typing = Extract<Action, { type: 'paste' | 'keys' }>
+
+// Decided right before typing, on a status read that moment: the mirror's view may be a poll old.
+export function typingRefusal(a: Typing, status: string | null, freshHash: string | null): string | null {
+  if (status === null) return 'the session is gone'
+  if (a.type === 'paste' && !a.allowWaiting && status === 'waiting') return 'a prompt opened — use the buttons, `!keys` or `!type`'
+  if (a.type === 'keys' && a.hash && (status !== 'waiting' || freshHash !== a.hash)) return 'the prompt changed — check the new card'
+  return null
+}
+
+// A transcript born moments ago is read from the start; an older one (resume, -c) only from its current end.
+export function startOffset(birthtimeMs: number, size: number, now: number): number {
+  return birthtimeMs >= now - 15_000 ? 0 : size
+}
+
 type Entry = {
   state: State
   pid: number
@@ -91,8 +106,8 @@ type Entry = {
   outbox: Outbox<Message>
   transcript: string | null
   offset: number
-  // Where reading starts once the transcript is known: its end, the start, or by file age (after /clear or /resume).
-  from: 'eof' | 'start' | 'birth'
+  // Where reading starts once the transcript is known: its end, or by file age (new session, /clear, /resume).
+  from: 'eof' | 'birth'
 }
 
 const NO_MENTIONS = { parse: [] as [] }
@@ -135,7 +150,9 @@ function main(): void {
   const projectsDir = join(claudeDir, 'projects')
   const ttl = Number(process.env.CCDS_ENDED_TTL_MS) || 3_600_000
 
-  const lockPath = join(tmpdir(), 'claude-code-discord-sync.lock')
+  const lockDir = join(homedir(), 'Library', 'Caches')
+  mkdirSync(lockDir, { recursive: true })
+  const lockPath = join(lockDir, 'claude-code-discord-sync.lock')
   if (!acquireLock(lockPath)) {
     console.error(`Another instance is running (lock ${lockPath})`)
     process.exit(1)
@@ -196,12 +213,16 @@ function main(): void {
       if (!refusal) return
       await channel.send(`⚠️ Not archived: ${refusal}`)
     }
-    await channel.edit({ parent: endedCat.id, topic: endedTopic(channel.topic ?? '', Date.now()), lockPermissions: false })
+    const topic = endedTopic(channel.topic ?? '', Date.now())
+    // The move can fail (e.g. 50 channels in Ended Sessions); the ended stamp alone still gets it swept.
+    await channel.edit({ parent: endedCat.id, topic, lockPermissions: false }).catch((err) => {
+      log('move to Ended Sessions failed:', err.message)
+      return channel.setTopic(topic).catch((err2) => log('ended topic failed:', err2.message))
+    })
     await channel.send(renderEnded(ttl))
   }
 
-  // origin: the button click that produced these actions, so a refused keystroke can still be reported.
-  async function execute(e: Entry, actions: Action[], origin?: string): Promise<void> {
+  async function execute(e: Entry, actions: Action[]): Promise<void> {
     for (const a of actions) {
       switch (a.type) {
         case 'create_channel':
@@ -221,6 +242,10 @@ function main(): void {
           // Rate-limited to ~2 per 10 minutes, so never block the queue on it.
           e.channel?.setName(a.name).catch((err) => log('rename failed:', err.message))
           break
+        case 'set_topic':
+          // Rate-limited like renames.
+          e.channel?.setTopic(a.topic).catch((err) => log('set topic failed:', err.message))
+          break
         case 'send': {
           if (!a.content && !a.embed) break
           const channel = e.channel
@@ -235,24 +260,6 @@ function main(): void {
           if (e.channel) await endChannel(e.channel, a.archive)
           log(`session ${e.pid} ended`)
           break
-        case 'paste':
-        case 'keys': {
-          const pane = e.state.pane
-          if (!pane) break
-          const target = a.replyTo ?? origin
-          await paneQueue(pane, async () => {
-            const reason = await checkPane(pane, e.pid, e.procStart)
-              ?? await (a.type === 'paste' ? pasteText(pane, a.text) : sendKeys(pane, a.keys)).then(() => null, (err) => err.message)
-            if (reason) {
-              log(`not sent to ${pane}: ${reason}`)
-              if (target) await reply(target, `⚠️ Not sent: ${reason}`)
-              return
-            }
-            const source = target && sources.get(target)
-            if (source instanceof Message) await source.react('✅')
-          })
-          break
-        }
         case 'reply':
           await reply(a.replyTo, a.content)
           break
@@ -260,15 +267,45 @@ function main(): void {
     }
   }
 
+  // Keystrokes skip the send queue (rate-limited sends must not delay them) and run in order per pane.
+  // origin: the button click that produced the action, so a refused keystroke can still be reported.
+  function typeInto(e: Entry, a: Typing, origin?: string): void {
+    const pane = e.state.pane
+    if (!pane) return
+    const target = a.replyTo ?? origin
+    void paneQueue(pane, async () => {
+      const status = await readStatus(sessionsDir, e.pid)
+      const screen = a.type === 'keys' && a.hash && status === 'waiting' ? await capture(pane).catch(() => null) : null
+      const reason = typingRefusal(a, status, screen ? parseDialog(screen)?.hash ?? null : null)
+        ?? await checkPane(pane, e.pid, e.procStart)
+        ?? await (a.type === 'paste' ? pasteText(pane, a.text) : sendKeys(pane, a.keys)).then(() => null, (err) => err.message)
+      if (reason) {
+        log(`not sent to ${pane}: ${reason}`)
+        // The next poll re-posts the card; an unsent paste must not swallow a later identical terminal prompt.
+        if (a.type === 'keys' && a.hash) e.state = { ...e.state, card: null }
+        if (a.type === 'paste') e.state = dropEcho(e.state, a.text)
+        if (target) await reply(target, `⚠️ Not sent: ${reason}`)
+        return
+      }
+      const source = target && sources.get(target)
+      if (source instanceof Message) await source.react('✅')
+    })
+  }
+
   function apply(e: Entry, input: Input): void {
     const { state, actions } = step(e.state, input)
     e.state = state
-    if (actions.length) void queue(state.key, () => execute(e, actions, input.kind === 'button' ? input.id : undefined))
+    const rest: Action[] = []
+    for (const a of actions) {
+      if (a.type === 'paste' || a.type === 'keys') typeInto(e, a, input.kind === 'button' ? input.id : undefined)
+      else rest.push(a)
+    }
+    if (rest.length) void queue(state.key, () => execute(e, rest))
   }
 
-  function track(s: Session, channel: TextChannel | null, from: Entry['from']): Entry {
+  function track(s: Session, channel: TextChannel | null, from: Entry['from'], archiveOnEnd = false): Entry {
     // Non-interactive (background) sessions are mirrored read-only.
-    const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null }, userId)
+    const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null, archiveOnEnd }, userId)
     const e: Entry = { state, pid: s.pid, procStart: s.procStart, channel, outbox: new Outbox(), transcript: null, offset: 0, from }
     mirrors.set(state.key, e)
     // An existing channel replaces create_channel; its current name stops a needless rename.
@@ -289,7 +326,7 @@ function main(): void {
     }
     for (const s of sessions) {
       // Sessions already running at startup start at the end of their transcript: no history replay.
-      const e = mirrors.get(`${s.pid}|${s.procStart}`) ?? track(s, null, startup && s.transcript ? 'eof' : 'start')
+      const e = mirrors.get(`${s.pid}|${s.procStart}`) ?? track(s, null, startup && s.transcript ? 'eof' : 'birth')
       if (s.sessionId !== e.state.sessionId) {
         apply(e, { kind: 'session_changed', sessionId: s.sessionId })
         e.transcript = null
@@ -297,9 +334,8 @@ function main(): void {
       }
       if (s.transcript && s.transcript !== e.transcript) {
         const st = await stat(s.transcript).catch(() => null)
-        const fresh = e.from === 'start' || (e.from === 'birth' && (st?.birthtimeMs ?? 0) >= now - 15_000)
         e.transcript = s.transcript
-        e.offset = fresh || !st ? 0 : st.size
+        e.offset = !st ? 0 : e.from === 'eof' ? st.size : startOffset(st.birthtimeMs, st.size, now)
       }
       if (e.transcript) {
         const { lines, next } = await readAppended(e.transcript, e.offset)
@@ -315,7 +351,8 @@ function main(): void {
     if (now - lastSweep >= 60_000) {
       lastSweep = now
       for (const c of guild.channels.cache.values()) {
-        if (c.parentId === endedCat.id && c.type === ChannelType.GuildText && isDue(c.topic, now, ttl)) {
+        // Any channel stamped ended, so one whose move to Ended Sessions failed is swept too; archived ones carry no stamp.
+        if (c.type === ChannelType.GuildText && isDue(c.topic, now, ttl)) {
           await c.delete().then(() => log(`deleted ended channel ${c.name}`), (err) => log('delete failed:', err.message))
         }
       }
@@ -348,10 +385,12 @@ function main(): void {
     for (const c of guild.channels.cache.values()) {
       if (c.parentId !== sessionsCat.id || c.type !== ChannelType.GuildText) continue
       const t = parseTopic(c.topic)
-      if (!t) continue
+      // Already ended (its move to Ended Sessions failed); the sweep deletes it.
+      if (!t || t.endedAt !== null) continue
       const key = `${t.pid}|${t.procStart}`
       const s = sessions.find((x) => `${x.pid}|${x.procStart}` === key)
-      if (s && !mirrors.has(key)) track(s, c, 'eof')
+      // A session whose transcript doesn't exist yet must not skip its first turn.
+      if (s && !mirrors.has(key)) track(s, c, s.transcript ? 'eof' : 'birth', t.archive)
       else void queue(c.id, () => endChannel(c, false))
     }
     log(`ready: ${mirrors.size} session(s) reattached`)

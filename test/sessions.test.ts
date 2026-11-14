@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { listSessions } from '../src/sessions.ts'
+import { listSessions, readStatus } from '../src/sessions.ts'
 
 const exec = promisify(execFile)
 
@@ -99,7 +99,31 @@ describe('listSessions', () => {
     }
   })
 
+  it('does not throw on a non-string cwd or name', async () => {
+    const { sessionsDir, projectsDir } = await setup({ 'a.json': live({ sessionId: 'sid-a', cwd: 42, name: { x: 1 } }) })
+    expect(await listSessions(sessionsDir, projectsDir)).toMatchObject([{ sessionId: 'sid-a', cwd: '', name: '' }])
+  })
+
   it('returns an empty list when the registry directory is missing', async () => {
     expect(await listSessions(join(tmpdir(), 'ccds-no-such-dir'), join(tmpdir(), 'ccds-no-such-dir'))).toEqual([])
+  })
+})
+
+describe('readStatus', () => {
+  it('reads the status from <pid>.json, fresh on every call', async () => {
+    const { sessionsDir } = await setup({ '123.json': { pid: 123, status: 'busy' } })
+    expect(await readStatus(sessionsDir, 123)).toBe('busy')
+    await writeFile(join(sessionsDir, '123.json'), JSON.stringify({ pid: 123, status: 'waiting' }))
+    expect(await readStatus(sessionsDir, 123)).toBe('waiting')
+  })
+
+  it('returns an empty status for an entry without one', async () => {
+    const { sessionsDir } = await setup({ '123.json': { pid: 123 } })
+    expect(await readStatus(sessionsDir, 123)).toBe('')
+  })
+
+  it('returns null for a missing, broken or non-object entry', async () => {
+    const { sessionsDir } = await setup({ '2.json': '{"status":', '3.json': 'null', '4.json': '"waiting"' })
+    for (const pid of [1, 2, 3, 4]) expect(await readStatus(sessionsDir, pid)).toBeNull()
   })
 })

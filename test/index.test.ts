@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, Outbox, serialQueue } from '../src/index.ts'
+import { acquireLock, Outbox, serialQueue, startOffset, typingRefusal } from '../src/index.ts'
 
 const lockPath = () => join(mkdtempSync(join(tmpdir(), 'ccds-lock-')), 'lock')
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -169,5 +169,47 @@ describe('serialQueue', () => {
     run('a', async () => { throw new Error('boom') })
     await run('a', async () => void order.push('after'))
     expect(order).toEqual(['after'])
+  })
+})
+
+describe('startOffset', () => {
+  const now = 1_000_000
+  it('reads a transcript born in the last 15 seconds from the start', () => {
+    expect(startOffset(now - 15_000, 500, now)).toBe(0)
+    expect(startOffset(now, 500, now)).toBe(0)
+  })
+
+  it('skips the history of an older transcript (resume, -c)', () => {
+    expect(startOffset(now - 15_001, 500, now)).toBe(500)
+  })
+})
+
+describe('typingRefusal', () => {
+  const paste = { type: 'paste', text: 'hi', replyTo: 'm1' } as const
+  const typed = { type: 'paste', text: 'hi', replyTo: 'm1', allowWaiting: true } as const
+  const button = { type: 'keys', keys: ['1'], hash: 'abc' } as const
+  const keys = { type: 'keys', keys: ['Down'], replyTo: 'm1' } as const
+
+  it('refuses anything once the session is gone', () => {
+    for (const a of [paste, typed, button, keys]) expect(typingRefusal(a, null, 'abc')).toMatch(/gone/)
+  })
+
+  it('refuses a plain message when a prompt opened, but lets !type through', () => {
+    expect(typingRefusal(paste, 'waiting', null)).toMatch(/prompt opened/)
+    expect(typingRefusal(paste, 'busy', null)).toBeNull()
+    expect(typingRefusal(paste, 'idle', null)).toBeNull()
+    expect(typingRefusal(typed, 'waiting', null)).toBeNull()
+  })
+
+  it('sends a button only while the same prompt is still open', () => {
+    expect(typingRefusal(button, 'waiting', 'abc')).toBeNull()
+    expect(typingRefusal(button, 'waiting', 'def')).toMatch(/prompt changed/)
+    expect(typingRefusal(button, 'waiting', null)).toMatch(/prompt changed/)
+    expect(typingRefusal(button, 'idle', 'abc')).toMatch(/prompt changed/)
+  })
+
+  it('lets !keys through in any live status', () => {
+    expect(typingRefusal(keys, 'waiting', null)).toBeNull()
+    expect(typingRefusal(keys, 'idle', null)).toBeNull()
   })
 })

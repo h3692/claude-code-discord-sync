@@ -27,6 +27,17 @@ async function readRegistry(sessionsDir: string): Promise<any[]> {
   return entries.filter((e) => Number.isInteger(e?.pid) && e.pid > 0 && typeof e.sessionId === 'string' && e.sessionId)
 }
 
+// Status of one session read straight from its registry entry; null when the entry is missing or unreadable.
+export async function readStatus(sessionsDir: string, pid: number): Promise<string | null> {
+  try {
+    const e = JSON.parse(await readFile(join(sessionsDir, `${pid}.json`), 'utf8'))
+    if (typeof e !== 'object' || !e) return null
+    return typeof e.status === 'string' ? e.status : ''
+  } catch {
+    return null
+  }
+}
+
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -76,10 +87,10 @@ export async function listSessions(sessionsDir: string, projectsDir: string): Pr
   live.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))
   const dirs = await readdir(projectsDir).catch(() => [])
   return Promise.all(live.map(async (e): Promise<Session> => {
-    const cwd = e.cwd ?? ''
+    const cwd = typeof e.cwd === 'string' ? e.cwd : ''
     const pane = typeof e.tmux === 'string' ? e.tmux.slice(e.tmux.lastIndexOf('.') + 1) : ''
     return {
-      pid: e.pid, procStart: e.procStart ?? '', sessionId: e.sessionId, cwd, name: e.name || basename(cwd),
+      pid: e.pid, procStart: e.procStart ?? '', sessionId: e.sessionId, cwd, name: (typeof e.name === 'string' && e.name) || basename(cwd),
       status: e.status ?? '', interactive: e.kind === 'interactive', pane: PANE.test(pane) ? pane : null,
       transcript: await findTranscript(projectsDir, dirs, e.sessionId),
     }
