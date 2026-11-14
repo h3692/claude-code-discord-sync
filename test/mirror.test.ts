@@ -365,6 +365,102 @@ describe('step: prompt cards', () => {
   })
 })
 
+const say = (state: State, text: string, id = 'm1') => step(state, { kind: 'message', id, text })
+const READ_ONLY = "👀 Read-only: this session isn't running in tmux."
+
+describe('step: messages from Discord', () => {
+  it('pastes plain text and skips its transcript echo, while a different prompt still posts', () => {
+    const a = say(start().state, '  fix the login bug  ')
+    expect(a.actions).toEqual([{ type: 'paste', text: 'fix the login bug', replyTo: 'm1' }])
+    const echo = events(a.state, { kind: 'prompt', text: 'fix the login bug' })
+    expect(echo.actions).toEqual([])
+    expect(echo.state.pendingEcho).toEqual([])
+    expect(sends(events(a.state, { kind: 'prompt', text: 'something else' }).actions)).toHaveLength(1)
+  })
+
+  it('matches the echo after CRLF and control characters are cleaned by the paste', () => {
+    const a = say(start().state, 'line one\r\nline\x1b[31m two\x07')
+    expect(a.state.pendingEcho).toEqual(['line one\nline[31m two'])
+    expect(events(a.state, { kind: 'prompt', text: 'line one\nline[31m two\n' }).actions).toEqual([])
+  })
+
+  it('ignores empty messages', () => {
+    expect(say(start().state, '   ').actions).toEqual([])
+  })
+
+  it('passes slash commands through as text', () => {
+    expect(say(start().state, '/clear').actions).toEqual([{ type: 'paste', text: '/clear', replyTo: 'm1' }])
+  })
+
+  it('refuses other ! messages, which Claude Code would run as shell commands', () => {
+    const content = "🚫 Messages starting with `!` aren't sent — Claude Code would run them as shell commands. Commands: `!keys`, `!type`, `!archive`."
+    for (const text of ['!ls', '!keysx Down', '! rm -rf /', '\x07 !ls']) {
+      const { state, actions } = say(start().state, text)
+      expect(actions).toEqual([{ type: 'reply', replyTo: 'm1', content }])
+      expect(state.pendingEcho).toEqual([])
+    }
+  })
+
+  it('sends keys, case-insensitively', () => {
+    expect(say(start().state, '!KEYS down enter').actions).toEqual([{ type: 'keys', keys: ['Down', 'Enter'], replyTo: 'm1' }])
+  })
+
+  it('lists the allowed keys when they cannot be parsed', () => {
+    const content = '⌨️ Allowed keys: digits 0-9, Up, Down, Left, Right, Enter, Escape, Tab, BTab, Space, BSpace (max 20). Example: `!keys Down Enter`'
+    for (const text of ['!keys rm -rf', '!keys']) {
+      expect(say(start().state, text).actions).toEqual([{ type: 'reply', replyTo: 'm1', content }])
+    }
+  })
+
+  it('types an answer while a prompt is open, but not one starting with !', () => {
+    const s0 = { ...start().state, status: 'waiting' }
+    const a = say(s0, '!type yes')
+    expect(a.actions).toEqual([{ type: 'paste', text: 'yes', replyTo: 'm1' }])
+    expect(a.state.pendingEcho).toEqual(['yes'])
+    for (const text of ['!type !ls', '!type \x1b!ls']) expect(say(s0, text).actions).toEqual([
+      { type: 'reply', replyTo: 'm1', content: '🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.' },
+    ])
+    expect(say(s0, '!type  ').actions).toEqual([{ type: 'reply', replyTo: 'm1', content: '✍️ Usage: `!type your answer`' }])
+  })
+
+  it('does not paste plain text while a prompt is open', () => {
+    const { state, actions } = say({ ...start().state, status: 'waiting' }, 'yes')
+    expect(actions).toEqual([{ type: 'reply', replyTo: 'm1', content: '🟡 A prompt is open — tap a button, or use `!keys` / `!type`.' }])
+    expect(state.pendingEcho).toEqual([])
+  })
+
+  it('replies read-only when the session is not in tmux', () => {
+    const s0 = { ...start().state, pane: null }
+    for (const text of ['hello', '!keys Enter', '!type yes']) {
+      expect(say(s0, text).actions).toEqual([{ type: 'reply', replyTo: 'm1', content: READ_ONLY }])
+    }
+  })
+
+  it('archives the channel at the end once asked, with or without tmux', () => {
+    const a = say({ ...start().state, pane: null }, '!Archive')
+    expect(a.actions).toEqual([{ type: 'reply', replyTo: 'm1', content: '📦 This channel will be archived when the session ends.' }])
+    expect(step(a.state, { kind: 'ended' }).actions).toEqual([{ type: 'end_channel', archive: true }])
+  })
+
+  it('keeps only the 20 newest pending echoes', () => {
+    let s = start().state
+    for (let i = 0; i < 22; i++) s = say(s, `msg ${i}`).state
+    expect(s.pendingEcho).toHaveLength(20)
+    expect(s.pendingEcho[0]).toBe('msg 2')
+    expect(s.pendingEcho[19]).toBe('msg 21')
+  })
+
+  it('never changes the state it was given', () => {
+    let s = start().state
+    for (const text of ['hello', '!type yes', '!archive', '!keys Enter']) {
+      const before = structuredClone(s)
+      const next = say(s, text).state
+      expect(s).toEqual(before)
+      s = next
+    }
+  })
+})
+
 describe('topics', () => {
   it('round-trips the process identity, spaces included', () => {
     const topic = topicFor(42, procStart)

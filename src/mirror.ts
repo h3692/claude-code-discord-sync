@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { channelName, renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderText } from './render.ts'
 import type { Agent, Tool } from './render.ts'
-import { parseDialog } from './tmux.ts'
+import { parseDialog, parseKeys, sanitizePaste } from './tmux.ts'
 import type { Dialog } from './tmux.ts'
 import type { TranscriptEvent } from './transcript.ts'
 
@@ -50,6 +50,11 @@ const EMBED_MAX = 4096
 const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!keys Down Enter` or `!type your answer`"
 const NO_TMUX = "Claude is waiting for you, but this session isn't in tmux — answer at the terminal."
 const CLOSED = 'That prompt is no longer open.'
+const READ_ONLY = "👀 Read-only: this session isn't running in tmux."
+const BAD_KEYS = '⌨️ Allowed keys: digits 0-9, Up, Down, Left, Right, Enter, Escape, Tab, BTab, Space, BSpace (max 20). Example: `!keys Down Enter`'
+
+// Claude Code records a pasted prompt as the sanitized paste, trimmed; both sides of the echo match use this.
+const normalize = (text: string) => sanitizePaste(text).trim()
 
 export function newMirror(
   s: { pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string },
@@ -112,7 +117,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       for (const e of input.events) {
         switch (e.kind) {
           case 'prompt': {
-            const i = s.pendingEcho.indexOf(e.text.trim().replace(/\r\n/g, '\n'))
+            const i = s.pendingEcho.indexOf(normalize(e.text))
             if (i !== -1) {
               s.pendingEcho.splice(i, 1)
               break
@@ -239,7 +244,43 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       }
       break
     }
-    // 'message' is handled by the inbound work.
+    case 'message': {
+      // Normalized up front so the `!` checks see what the paste would actually type.
+      const text = normalize(input.text)
+      const reply = (content: string) => actions.push({ type: 'reply', replyTo: input.id, content })
+      const paste = (t: string) => {
+        actions.push({ type: 'paste', text: t, replyTo: input.id })
+        s.pendingEcho = [...s.pendingEcho, t].slice(-20)
+      }
+      if (!text) break
+      if (text.startsWith('!')) {
+        const [, cmd, args = ''] = text.match(/^!(\w+)(?:\s+([\s\S]*))?$/) ?? []
+        switch (cmd?.toLowerCase()) {
+          case 'keys': {
+            const keys = parseKeys(args)
+            if (!keys) reply(BAD_KEYS)
+            else if (!s.pane) reply(READ_ONLY)
+            else actions.push({ type: 'keys', keys, replyTo: input.id })
+            break
+          }
+          case 'type':
+            if (!s.pane) reply(READ_ONLY)
+            else if (!args) reply('✍️ Usage: `!type your answer`')
+            else if (args.startsWith('!')) reply('🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.')
+            else paste(args)
+            break
+          case 'archive':
+            s.archiveOnEnd = true
+            reply('📦 This channel will be archived when the session ends.')
+            break
+          default:
+            reply("🚫 Messages starting with `!` aren't sent — Claude Code would run them as shell commands. Commands: `!keys`, `!type`, `!archive`.")
+        }
+      } else if (!s.pane) reply(READ_ONLY)
+      else if (s.status === 'waiting') reply('🟡 A prompt is open — tap a button, or use `!keys` / `!type`.')
+      else paste(text)
+      break
+    }
   }
   return { state: s, actions }
 }
