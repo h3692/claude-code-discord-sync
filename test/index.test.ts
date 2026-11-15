@@ -81,7 +81,7 @@ describe.skipIf(process.platform === 'win32')('acquireLock', () => {
 describe('commandLine', () => {
   it('reads the command line of a live process', () => {
     expect(commandLine(process.pid)).toMatch(/node|vitest/i)
-  })
+  }, 60_000) // PowerShell on a cold Windows runner can take longer than vitest's 5 s default to start.
 })
 
 describe('isWatcherCommand', () => {
