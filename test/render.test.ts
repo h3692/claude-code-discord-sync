@@ -30,6 +30,12 @@ describe('toolLine', () => {
     expect(toolLine(tool('Frobnicate', { x: 1 }), cwd)).toBe('-# 🔧 Frobnicate ✅')
   })
 
+  it('shortens Windows paths under the cwd', () => {
+    const win = 'C:\\Users\\me\\proj'
+    expect(toolLine(tool('Read', { file_path: 'C:\\Users\\me\\proj\\src\\a.ts' }), win)).toBe('-# 📄 Read `src\\a.ts` ✅')
+    expect(toolLine(tool('Read', { file_path: 'C:\\Users\\me\\project\\a.ts' }), win)).toBe('-# 📄 Read `C:\\Users\\me\\project\\a.ts` ✅')
+  })
+
   it('shows the state glyph', () => {
     expect(toolLine(tool('TodoWrite', {}, 'running'), cwd)).toBe('-# 📋 Todos ⏳')
     expect(toolLine(tool('TodoWrite', {}, 'error'), cwd)).toBe('-# 📋 Todos ❌')

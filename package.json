@@ -4,17 +4,26 @@
   "private": true,
   "description": "Mirror and control local Claude Code sessions from Discord",
   "type": "module",
+  "bin": {
+    "claude-code-discord-sync": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "assets/logo.png"
+  ],
   "engines": {
     "node": ">=24.12"
   },
   "scripts": {
-    "start": "node src/index.ts",
+    "prepack": "tsc",
+    "start": "node src/cli.ts start",
     "test": "vitest run"
   },
   "dependencies": {
     "discord.js": "14.28.1"
   },
   "devDependencies": {
+    "typescript": "7.0.2",
     "vitest": "5.1.0"
   }
 }

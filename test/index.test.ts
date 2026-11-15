@@ -4,8 +4,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, freshEvents, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
 import { newMirror } from '../src/mirror.ts'
+
+// Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
+process.env.TMUX_SOCKET_NAME = 'ccds-test-guard'
 
 const lockPath = () => join(mkdtempSync(join(tmpdir(), 'ccds-lock-')), 'lock')
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -21,7 +24,8 @@ function deferred<T>() {
 
 afterEach(() => vi.restoreAllMocks())
 
-describe('acquireLock', () => {
+// Needs ps and true.
+describe.skipIf(process.platform === 'win32')('acquireLock', () => {
   let deadPid: number
   beforeAll(async () => {
     const child = spawn('true')
@@ -71,6 +75,60 @@ describe('acquireLock', () => {
       writeFileSync(path, body)
       expect(acquireLock(path)).toBe(true)
     }
+  })
+})
+
+describe('commandLine', () => {
+  it('reads the command line of a live process', () => {
+    expect(commandLine(process.pid)).toMatch(/node|vitest/i)
+  })
+})
+
+describe('isWatcherCommand', () => {
+  it('recognises every generation of the watcher', () => {
+    for (const command of [
+      'node src/index.ts', // v1 LaunchAgent
+      '/usr/local/bin/node /Users/me/claude-code-discord-sync/src/index.ts',
+      'node src/cli.ts start', // npm start
+      '/usr/local/bin/node /opt/homebrew/lib/node_modules/claude-code-discord-sync/dist/cli.js start',
+      'node /opt/homebrew/bin/claude-code-discord-sync start', // bin shim
+      '/opt/homebrew/bin/claude-code-discord-sync start',
+      '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\claude-code-discord-sync\\dist\\cli.js" start --background',
+      'C:\\nodejs\\node.exe C:\\npm\\node_modules\\claude-code-discord-sync\\dist\\cli.js start',
+    ]) expect(isWatcherCommand(command), command).toBe(true)
+  })
+
+  it('ignores other commands that mention it', () => {
+    for (const command of [
+      'tail -f /Users/me/Library/Logs/claude-code-discord-sync.log',
+      'vim /Users/me/claude-code-discord-sync/README.md',
+      'node /opt/homebrew/bin/claude-code-discord-sync setup',
+      'claude-code-discord-sync setup',
+      'node /opt/homebrew/lib/node_modules/claude-code-discord-sync/dist/cli.js status',
+      'node /x/other-tool/dist/cli.js start',
+      'node /opt/homebrew/bin/claude-code-discord-sync starter',
+    ]) expect(isWatcherCommand(command), command).toBe(false)
+  })
+})
+
+describe('lockDirFor', () => {
+  it('keeps the lock in ~/Library/Caches on macOS', () => {
+    expect(lockDirFor('darwin', { XDG_CONFIG_HOME: '/x' }, '/Users/me')).toBe(join('/Users/me', 'Library', 'Caches'))
+  })
+
+  it('uses the config folder on Linux, honouring XDG_CONFIG_HOME', () => {
+    expect(lockDirFor('linux', {}, '/home/me')).toBe(join('/home/me', '.config', 'claude-code-discord-sync'))
+    expect(lockDirFor('linux', { XDG_CONFIG_HOME: '/cfg' }, '/home/me')).toBe(join('/cfg', 'claude-code-discord-sync'))
+  })
+
+  it('uses %APPDATA% on Windows', () => {
+    const appData = 'C:\\Users\\me\\AppData\\Roaming'
+    expect(lockDirFor('win32', { APPDATA: appData }, 'C:\\Users\\me')).toBe(join(appData, 'claude-code-discord-sync'))
+  })
+
+  it('names the Linux and Windows lock folder after CCDS_NAME', () => {
+    expect(lockDirFor('linux', { CCDS_NAME: 'ccds-test' }, '/home/me')).toBe(join('/home/me', '.config', 'ccds-test'))
+    expect(lockDirFor('win32', { CCDS_NAME: 'ccds-test', APPDATA: 'C:\\a' }, 'C:\\Users\\me')).toBe(join('C:\\a', 'ccds-test'))
   })
 })
 

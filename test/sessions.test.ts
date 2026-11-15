@@ -4,19 +4,12 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { listSessions, readStatus } from '../src/sessions.ts'
+import { listSessions, parseStartTimes, readStatus, sameStartFt, verifiedStarts, windowsStartTimes } from '../src/sessions.ts'
 
 const exec = promisify(execFile)
 
 let procStart: string
 let deadPid: number
-
-beforeAll(async () => {
-  procStart = (await exec('ps', ['-o', 'lstart=', '-p', String(process.pid)], { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } })).stdout.trim()
-  const child = spawn('true')
-  await new Promise((resolve) => child.on('exit', resolve))
-  deadPid = child.pid!
-})
 
 async function setup(entries: Record<string, unknown>) {
   const root = await mkdtemp(join(tmpdir(), 'ccds-sessions-'))
@@ -34,7 +27,15 @@ const live = (over: Record<string, unknown>) => ({
   pid: process.pid, procStart, cwd: '/Users/me/proj', name: 'proj-1', kind: 'interactive', status: 'idle', startedAt: 1, ...over,
 })
 
-describe('listSessions', () => {
+// Needs ps and true.
+describe.skipIf(process.platform === 'win32')('listSessions', () => {
+  beforeAll(async () => {
+    procStart = (await exec('ps', ['-o', 'lstart=', '-p', String(process.pid)], { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } })).stdout.trim()
+    const child = spawn('true')
+    await new Promise((resolve) => child.on('exit', resolve))
+    deadPid = child.pid!
+  })
+
   it('keeps live sessions and maps their fields, parsing the pane and finding the transcript', async () => {
     const { sessionsDir, projectsDir } = await setup({
       'a.json': live({ sessionId: 'sid-a', tmux: '0:@0.%11', status: 'waiting' }),
@@ -132,5 +133,81 @@ describe('readStatus', () => {
   it('returns null for a missing, broken or non-object entry', async () => {
     const { sessionsDir } = await setup({ '2.json': '{"status":', '3.json': 'null', '4.json': '"waiting"' })
     for (const pid of [1, 2, 3, 4]) expect(await readStatus(sessionsDir, pid)).toBeNull()
+  })
+})
+
+describe('sameStartFt', () => {
+  it('matches an exact FILETIME string, and nothing else for an exact value', () => {
+    expect(sameStartFt('134012345678901234', '134012345678901234')).toBe(true)
+    expect(sameStartFt('134012345678901234', '134012345678901235')).toBe(false)
+    expect(sameStartFt('', '')).toBe(false)
+    expect(sameStartFt('1e17', '100000000000000000')).toBe(false)
+    expect(sameStartFt('134012345678901234', '')).toBe(false)
+  })
+
+  it('allows one float64 step for a value that arrived as a rounded JSON number', () => {
+    const recorded = String(Number('134012345678901234')) // 134012345678901230: the double is ...232
+    expect(sameStartFt(recorded, '134012345678901234')).toBe(true)
+    expect(sameStartFt(recorded, '134012345678901246')).toBe(true)
+    expect(sameStartFt(recorded, '134012345678901250')).toBe(false)
+    expect(sameStartFt(recorded, '134012345678900000')).toBe(false)
+  })
+})
+
+describe('parseStartTimes', () => {
+  it('reads "pid filetime" lines, tolerating CRLF, blanks and junk', () => {
+    expect(parseStartTimes('123 134012345678901234\r\n\r\n 456 134012345678909999 \r\nnope\n')).toEqual(new Map([
+      [123, '134012345678901234'], [456, '134012345678909999'],
+    ]))
+    expect(parseStartTimes('')).toEqual(new Map())
+  })
+})
+
+const winEntry = (over: Record<string, unknown>) => ({
+  pid: process.pid, cwd: 'C:\\Users\\me\\proj', kind: 'interactive', status: 'idle', startedAt: 1, ...over,
+})
+
+describe('listSessions on Windows', () => {
+  it('drops a session whose start time cannot be confirmed (fails closed)', async () => {
+    const { sessionsDir, projectsDir } = await setup({ 'a.json': winEntry({ sessionId: 'sid-a', procStartFt: '1' }) })
+    expect(await listSessions(sessionsDir, projectsDir, 'win32')).toEqual([])
+  })
+
+  it('uses the cached check for a (pid, procStartFt) and keeps procStartFt as procStart', async () => {
+    verifiedStarts.set(`${process.pid}|999`, true)
+    const { sessionsDir, projectsDir } = await setup({ 'a.json': winEntry({ sessionId: 'sid-a', procStartFt: 999 }) })
+    expect(await listSessions(sessionsDir, projectsDir, 'win32')).toMatchObject([{ sessionId: 'sid-a', procStart: '999' }])
+  })
+
+  it('forgets cached checks for entries no longer live in the registry, so a reused pid is measured again', async () => {
+    verifiedStarts.set(`${process.pid}|999`, true)
+    verifiedStarts.set(`${process.pid}|555`, true)
+    verifiedStarts.set('999999|1', true)
+    const { sessionsDir, projectsDir } = await setup({ 'a.json': winEntry({ sessionId: 'sid-a', procStartFt: '999' }) })
+    await listSessions(sessionsDir, projectsDir, 'win32')
+    expect([...verifiedStarts.keys()]).toEqual([`${process.pid}|999`])
+    const empty = await setup({})
+    expect(await listSessions(empty.sessionsDir, empty.projectsDir, 'win32')).toEqual([])
+    expect(verifiedStarts.size).toBe(0)
+  })
+})
+
+describe.runIf(process.platform === 'win32')('Windows start times (real PowerShell)', () => {
+  it('measures this process as a FILETIME close to when node started', async () => {
+    const ft = (await windowsStartTimes([process.pid])).get(process.pid)
+    expect(ft).toMatch(/^\d+$/)
+    // FILETIME counts 100 ns ticks since 1601; timeOrigin is when this node process started, in ms since 1970.
+    const ms = Number((BigInt(ft!) - 116444736000000000n) / 10000n)
+    expect(Math.abs(ms - performance.timeOrigin)).toBeLessThan(60_000)
+  })
+
+  it('keeps a session whose procStartFt matches, as a string or a rounded number, and drops a mismatch', async () => {
+    const ft = (await windowsStartTimes([process.pid])).get(process.pid)!
+    for (const procStartFt of [ft, Number(ft)]) {
+      const { sessionsDir, projectsDir } = await setup({ 'a.json': winEntry({ sessionId: 'sid-a', procStartFt }) })
+      expect(await listSessions(sessionsDir, projectsDir), String(procStartFt)).toMatchObject([{ sessionId: 'sid-a', procStart: String(procStartFt) }])
+    }
+    const { sessionsDir, projectsDir } = await setup({ 'a.json': winEntry({ sessionId: 'sid-a', procStartFt: String(BigInt(ft) + 1000n) }) })
+    expect(await listSessions(sessionsDir, projectsDir)).toEqual([])
   })
 })

@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"es2024","module":"nodenext","moduleResolution":"nodenext","rewriteRelativeImportExtensions":true,"erasableSyntaxOnly":true,"verbatimModuleSyntax":true,"noCheck":true,"rootDir":"src","outDir":"dist"},"include":["src"]}

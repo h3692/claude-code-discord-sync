@@ -7,6 +7,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Client, EmbedBuilder, Events, GatewayIntentBits, Message, MessageFlags,
 } from 'discord.js'
 import type { ButtonInteraction, CategoryChannel, Guild, TextChannel } from 'discord.js'
+import { appName, configDirFor, powershell, run } from './config.ts'
 import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor } from './mirror.ts'
 import type { Action, Button, Input, State } from './mirror.ts'
 import { renderEnded } from './render.ts'
@@ -27,14 +28,30 @@ function alive(pid: number): boolean {
   }
 }
 
+// v1 (`node src/index.ts`), dev (`src/cli.ts start`), installed (`.../claude-code-discord-sync/dist/cli.js start`, the bin shim).
+export function isWatcherCommand(command: string): boolean {
+  return /(?:src[\\/]cli\.ts|claude-code-discord-sync[\\/]dist[\\/]cli\.js|(?:^|[\\/\s])claude-code-discord-sync)"?\s+start(?=\s|$)|src[\\/]index\.ts/.test(command)
+}
+
+// The command line of a pid: empty from PowerShell once it is gone, while ps exits 1.
+export function commandLine(pid: number): string {
+  if (process.platform === 'win32') return run(powershell(`(Get-CimInstance Win32_Process -Filter ('ProcessId=' + ${pid})).CommandLine`))
+  return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } })
+}
+
 // A live pid holds the lock only while it still runs this watcher: after a reboot the pid may belong to anything.
 function isWatcher(pid: number): boolean {
   try {
-    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).includes('src/index.ts')
+    return isWatcherCommand(commandLine(pid))
   } catch (e) {
-    // ps exits 1 for a pid that is gone; if ps can't run at all, the live pid is the best we have.
-    return typeof (e as { status?: unknown }).status !== 'number'
+    // ps exits 1 for a pid that is gone; if ps or PowerShell can't run at all, the live pid is the best we have.
+    return process.platform === 'win32' || typeof (e as { status?: unknown }).status !== 'number'
   }
+}
+
+export function lockDirFor(platform: string, env: Record<string, string | undefined>, home: string): string {
+  if (platform === 'darwin') return join(home, 'Library', 'Caches')
+  return configDirFor(platform, env, home)
 }
 
 // shortcut: two watchers starting in the same instant over a stale lock can both win; fine for a LaunchAgent.
@@ -172,24 +189,15 @@ function payload(a: Extract<Action, { type: 'send' | 'edit' }>) {
   }
 }
 
-function main(): void {
-  for (const name of ['DISCORD_BOT_TOKEN', 'DISCORD_GUILD_ID', 'DISCORD_USER_ID']) {
-    if (!process.env[name]) {
-      console.error(`Missing required environment variable ${name}`)
-      process.exit(1)
-    }
-  }
-  const token = process.env.DISCORD_BOT_TOKEN!
-  const guildId = process.env.DISCORD_GUILD_ID!
-  const userId = process.env.DISCORD_USER_ID!
-  const claudeDir = process.env.CLAUDE_DIR || join(homedir(), '.claude')
+export type Settings = { token: string; guildId: string; userId: string; claudeDir: string; ttl: number }
+
+export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void {
   const sessionsDir = join(claudeDir, 'sessions')
   const projectsDir = join(claudeDir, 'projects')
-  const ttl = Number(process.env.CCDS_ENDED_TTL_MS) || 3_600_000
 
-  const lockDir = join(homedir(), 'Library', 'Caches')
+  const lockDir = lockDirFor(process.platform, process.env, homedir())
   mkdirSync(lockDir, { recursive: true })
-  const lockPath = join(lockDir, 'claude-code-discord-sync.lock')
+  const lockPath = join(lockDir, `${appName(process.env)}.lock`)
   if (!acquireLock(lockPath)) {
     console.error(`Another instance is running (lock ${lockPath})`)
     process.exit(1)
@@ -512,5 +520,3 @@ function main(): void {
     process.exit(1)
   })
 }
-
-if (import.meta.main) main()

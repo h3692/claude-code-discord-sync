@@ -30,7 +30,7 @@ export function toolLine(t: Tool, cwd: string): string {
 // Inputs come straight from the transcript, so fields may be missing.
 function toolTarget(t: Tool, cwd: string): unknown {
   const input = t.input as Record<string, any>
-  const rel = (p: string) => (p.startsWith(cwd + '/') ? p.slice(cwd.length + 1) : p)
+  const rel = (p: string) => (p.startsWith(cwd + '/') || p.startsWith(cwd + '\\') ? p.slice(cwd.length + 1) : p)
   switch (t.name) {
     case 'Read': case 'Write': case 'Edit': case 'MultiEdit': case 'NotebookEdit':
       return rel(String(input.file_path ?? input.notebook_path ?? ''))
