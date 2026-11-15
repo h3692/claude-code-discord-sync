@@ -63,7 +63,7 @@ The recommended route is **WSL 2**. Run Claude Code and this tool inside WSL, wi
 steps above. Both must run on the same side: a watcher inside WSL can't see a Claude Code running on Windows, and
 the other way round.
 
-Native Windows is **experimental**. It uses [psmux](https://github.com/marlocarlo/psmux) in place of tmux:
+Native Windows is **experimental**. It uses [psmux](https://github.com/psmux/psmux) in place of tmux:
 
 ```powershell
 winget install marlocarlo.psmux
