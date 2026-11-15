@@ -5,7 +5,7 @@ import {
 } from '../src/mirror.ts'
 import type { Action, State } from '../src/mirror.ts'
 import type { TranscriptEvent } from '../src/transcript.ts'
-import { renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderText } from '../src/render.ts'
+import { renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderReadOnly, renderText } from '../src/render.ts'
 import { parseDialog, screenHash } from '../src/tmux.ts'
 
 const cwd = '/Users/me/proj'
@@ -29,6 +29,15 @@ describe('newMirror', () => {
     expect(make('proj-30').state.channel).toBe('proj-30')
     expect(make('Proj 30').actions[0]).toMatchObject({ name: 'proj-30' })
     expect(make('project-30').state.channel).toBe('proj-project-30')
+  })
+
+  it('marks a read-only session with a lock and says why', () => {
+    const { state, actions } = newMirror({ pid: 42, procStart, sessionId: 's1', cwd, name: 'fix login', pane: null, status: 'idle', readOnly: 'it is not running inside tmux' }, 'u1')
+    expect(actions[0]).toEqual({ type: 'create_channel', name: '🔒-proj-fix-login', topic: `ccds|42|${procStart}` })
+    expect(actions[1]).toEqual({ type: 'send', ref: expect.any(String), content: renderReadOnly('it is not running inside tmux') })
+    expect(actions).toHaveLength(2)
+    // The lock survives the rename to the conversation title.
+    expect(events(state, { kind: 'title', title: 'Fix the login bug' }).actions).toEqual([{ type: 'rename_channel', name: '🔒-proj-fix-the-login-bug' }])
   })
 
   it('restores the archive flag on reattach', () => {

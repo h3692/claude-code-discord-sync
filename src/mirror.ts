@@ -1,5 +1,5 @@
 import { basename } from 'node:path'
-import { channelName, renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderText } from './render.ts'
+import { channelName, renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderReadOnly, renderText } from './render.ts'
 import type { Agent, Tool } from './render.ts'
 import { parseDialog, parseKeys, sanitizePaste, screenHash } from './tmux.ts'
 import type { Dialog } from './tmux.ts'
@@ -21,6 +21,7 @@ export type State = {
   key: string // `${pid}|${procStart}`
   sessionId: string
   folder: string // basename(cwd)
+  lock: string // channel name prefix marking a session Discord can't type into, kept across renames
   cwd: string
   userId: string
   pane: string | null // null => read-only
@@ -66,20 +67,23 @@ const SHELL = /^[!！﹗]/
 const REPEATS = 3
 
 export function newMirror(
-  s: { pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string; archiveOnEnd?: boolean },
+  s: { pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string; archiveOnEnd?: boolean; readOnly?: string | null },
   userId: string,
 ): { state: State; actions: Action[] } {
   const folder = basename(s.cwd)
   // Session names often already start with the folder.
   const prefix = channelName(folder, '') + '-'
   const full = channelName(folder, s.name)
-  const channel = full.startsWith(prefix + prefix) ? full.slice(prefix.length) : full
+  const lock = s.readOnly ? '🔒-' : ''
+  const channel = lock + (full.startsWith(prefix + prefix) ? full.slice(prefix.length) : full)
   const state: State = {
-    key: `${s.pid}|${s.procStart}`, sessionId: s.sessionId, folder, cwd: s.cwd, userId, pane: s.pane, status: s.status,
+    key: `${s.pid}|${s.procStart}`, sessionId: s.sessionId, folder, lock, cwd: s.cwd, userId, pane: s.pane, status: s.status,
     titled: false, channel, seq: 0, tools: [], activityRefs: [], agents: [], agentsRef: null, agentIds: [], rendered: {},
     card: null, pendingEcho: [], archiveOnEnd: s.archiveOnEnd ?? false,
   }
-  return { state, actions: [{ type: 'create_channel', name: channel, topic: topicFor(s.pid, s.procStart, state.archiveOnEnd) }] }
+  const actions: Action[] = [{ type: 'create_channel', name: channel, topic: topicFor(s.pid, s.procStart, state.archiveOnEnd) }]
+  if (s.readOnly) actions.push({ type: 'send', ref: `r${++state.seq}`, content: renderReadOnly(s.readOnly) })
+  return { state, actions }
 }
 
 // For a paste that index refused, so its echo doesn't swallow a later identical terminal prompt.
@@ -195,7 +199,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
           case 'title': {
             if (s.titled) break
             s.titled = true
-            const name = channelName(s.folder, e.title)
+            const name = s.lock + channelName(s.folder, e.title)
             if (name !== s.channel) {
               s.channel = name
               actions.push({ type: 'rename_channel', name })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ACTIVITY_LINES_PER_MESSAGE, channelName, formatDuration, renderActivity, renderAgents, renderCard,
-  renderDone, renderEnded, renderPrompt, renderText, toolLine,
+  renderDone, renderEnded, renderPrompt, renderReadOnly, renderText, toolLine,
 } from '../src/render.ts'
 import type { Agent, Tool } from '../src/render.ts'
 
@@ -192,6 +192,13 @@ describe('renderCard', () => {
     expect(description.length).toBeLessThanOrEqual(4096)
     expect(description.startsWith('```\n…\nrow ')).toBe(true)
     expect(description.endsWith('❯ 1. Yes\n  2. No\n```')).toBe(true)
+  })
+})
+
+describe('renderReadOnly', () => {
+  it('says the channel is read-only, why, and how to get one you can type in', () => {
+    expect(renderReadOnly('it is not running inside tmux')).toBe(
+      '-# 🔒 Read-only: it is not running inside tmux. You can follow along here, but messages you send won\'t reach it. Start Claude Code inside tmux (`tmux new -s work`, then `claude`) for a channel you can type in.')
   })
 })
 

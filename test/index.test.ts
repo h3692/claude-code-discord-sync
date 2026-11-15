@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
 import { newMirror } from '../src/mirror.ts'
 
 // Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
@@ -349,5 +349,18 @@ describe('unanswer', () => {
     const s = { ...withCard('abc', null), card: null }
     expect(unanswer(s, keys, 'x')).toEqual({ state: s, edit: null })
     expect(unanswer(s, button, 'x')).toEqual({ state: s, edit: null })
+  })
+})
+
+describe('readOnlyReason', () => {
+  const tmuxed = { interactive: true, pane: '%3' }
+  it('is null for an interactive session in tmux', () => {
+    expect(readOnlyReason(tmuxed, 'darwin', {})).toBeNull()
+    expect(readOnlyReason(tmuxed, 'win32', { CCDS_WINDOWS_TYPING: '1' })).toBeNull()
+  })
+  it('names why Discord cannot type into the session', () => {
+    expect(readOnlyReason({ interactive: false, pane: '%3' }, 'darwin', {})).toBe('it is a background session')
+    expect(readOnlyReason({ interactive: true, pane: null }, 'linux', {})).toBe('it is not running inside tmux')
+    expect(readOnlyReason(tmuxed, 'win32', {})).toBe('typing on Windows is off (set CCDS_WINDOWS_TYPING=1)')
   })
 })

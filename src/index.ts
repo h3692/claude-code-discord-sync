@@ -191,6 +191,14 @@ function payload(a: Extract<Action, { type: 'send' | 'edit' }>) {
 
 export type Settings = { token: string; guildId: string; userId: string; claudeDir: string; ttl: number }
 
+// Why Discord can't type into a session, for its channel; null when it can.
+export function readOnlyReason(s: { interactive: boolean; pane: string | null }, platform: string, env: Record<string, string | undefined>): string | null {
+  if (!s.interactive) return 'it is a background session'
+  if (!s.pane) return 'it is not running inside tmux'
+  if (platform === 'win32' && env.CCDS_WINDOWS_TYPING !== '1') return 'typing on Windows is off (set CCDS_WINDOWS_TYPING=1)'
+  return null
+}
+
 export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void {
   const sessionsDir = join(claudeDir, 'sessions')
   const projectsDir = join(claudeDir, 'projects')
@@ -360,7 +368,8 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
 
   function track(s: Session, channel: TextChannel | null, from: Entry['from'], archiveOnEnd = false): Entry {
     // Non-interactive (background) sessions are mirrored read-only.
-    const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null, archiveOnEnd }, userId)
+    const readOnly = readOnlyReason(s, process.platform, process.env)
+    const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null, archiveOnEnd, readOnly }, userId)
     const e: Entry = {
       state, pid: s.pid, procStart: s.procStart, channel, outbox: new Outbox(), transcript: null, offset: 0, from, seenAt: Date.now(), misses: 0,
     }
