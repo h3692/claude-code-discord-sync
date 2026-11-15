@@ -202,7 +202,8 @@ export async function checkPane(
   }
 }
 
-export async function pasteText(pane: string, text: string, platform = process.platform as string): Promise<void> {
+// enter: false leaves the text in the input, for a caller that checks the screen before submitting it.
+export async function pasteText(pane: string, text: string, platform = process.platform as string, enter = true): Promise<void> {
   assertPane(pane)
   const name = `ccds-${randomBytes(6).toString('hex')}`
   if (platform === 'win32') {
@@ -216,7 +217,7 @@ export async function pasteText(pane: string, text: string, platform = process.p
       await writeFile(file, clean, { flag: 'wx' })
       await tmux('load-buffer', '-b', name, file)
       await tmux('paste-buffer', '-p', '-d', '-b', name, '-t', pane)
-      await tmux('send-keys', '-t', pane, 'Enter')
+      if (enter) await tmux('send-keys', '-t', pane, 'Enter')
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -230,7 +231,7 @@ export async function pasteText(pane: string, text: string, platform = process.p
     child.stdin.end(sanitizePaste(text))
   })
   await tmux('paste-buffer', '-p', '-d', '-b', name, '-t', pane)
-  await tmux('send-keys', '-t', pane, 'Enter')
+  if (enter) await tmux('send-keys', '-t', pane, 'Enter')
 }
 
 export async function sendKeys(pane: string, keys: string[]): Promise<void> {

@@ -94,7 +94,7 @@ export function renderDone(durationMs: number, pendingAgents: number, userId: st
   return `✅ Done in ${formatDuration(durationMs)}${userId ? ` <@${userId}>` : ''}${pending}`
 }
 
-export function renderCard(screen: string): { title: string; description: string } {
+export function renderCard(screen: string, agent = 'Claude'): { title: string; description: string } {
   // Start below the prompt's top border, the same region its hash covers, so earlier chat stays out.
   const lines = screen.replace(/\n$/, '').split('\n').map((l) => l.trimEnd())
   const top = lines.findIndex((l) => BORDER.test(l))
@@ -105,7 +105,7 @@ export function renderCard(screen: string): { title: string; description: string
     const nl = tail.indexOf('\n')
     body = `…\n${nl === -1 ? tail : tail.slice(nl + 1)}`
   }
-  return { title: '🟡 Claude needs you', description: `\`\`\`\n${body}\n\`\`\`` }
+  return { title: `🟡 ${agent} needs you`, description: `\`\`\`\n${body}\n\`\`\`` }
 }
 
 export function renderReadOnly(reason: string): string {

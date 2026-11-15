@@ -343,6 +343,25 @@ describe.skipIf(!hasTmux || process.platform === 'win32')('tmux exec wrappers', 
     await expect(sendKeys('main:0', ['1'])).rejects.toThrow()
   })
 
+  it('pastes without Enter when asked, so the text waits in the input', async () => {
+    const shown = async (n: number) => {
+      let count = 0
+      for (let i = 0; i < 40 && count < n; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        count = (await capture(pane)).split('zq7').length - 1
+      }
+      return count
+    }
+    tmux('send-keys', '-t', pane, 'C-l')
+    await pasteText(pane, 'zq7', undefined, false)
+    expect(await shown(1)).toBe(1)
+    // cat echoes the typed line, and prints it again only once Enter arrives.
+    await new Promise((r) => setTimeout(r, 300))
+    expect(await shown(2)).toBe(1)
+    await sendKeys(pane, ['Enter'])
+    expect(await shown(2)).toBe(2)
+  })
+
   // Each case puts a real process on a pane's tty in the state checkPane must refuse.
   it('passes only a running, foreground process on the pane\'s own tty', async () => {
     const start = (pid: number) => execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } })

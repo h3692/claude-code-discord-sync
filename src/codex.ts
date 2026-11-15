@@ -29,7 +29,8 @@ export function parseCodexLine(line: string, since?: number): TranscriptEvent[] 
     switch (payload.type) {
       case 'item_completed': return parseItem(payload.item)
       case 'task_complete': return [{ kind: 'turn_end', durationMs: payload.duration_ms ?? 0, pendingAgents: 0 }]
-      // turn_aborted needs no ping; closing still-running sub-agent rows is the mirror's job, the parser keeps no state.
+      // Closing still-running sub-agent rows is the mirror's job; the parser keeps no state.
+      case 'turn_aborted': return [{ kind: 'turn_aborted' }]
       default: return []
     }
   } catch {
@@ -225,7 +226,7 @@ export function pickRollout(rollouts: Rollout[], cwd: string, start: number): Ro
 // shortcut: never pruned, fine for the few rollouts a day brings; prune to the scanned folders if that grows.
 const headers = new Map<string, CodexMeta>()
 
-async function header(path: string): Promise<CodexMeta | null> {
+export async function header(path: string): Promise<CodexMeta | null> {
   const cached = headers.get(path)
   if (cached) return cached
   const input = createReadStream(path)

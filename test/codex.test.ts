@@ -16,7 +16,7 @@ const item = (item: object, timestamp = '2026-11-15T08:00:00.000Z') =>
   JSON.stringify({ timestamp, type: 'event_msg', payload: { type: 'item_completed', item } })
 
 describe('parseCodexLine', () => {
-  it('turns a redacted rollout into events, ignoring housekeeping, reasoning and aborted turns', async () => {
+  it('turns a redacted rollout into events, ignoring housekeeping and reasoning', async () => {
     const events = (await fixture('rollout.jsonl')).split('\n').flatMap((line) => parseCodexLine(line))
     expect(events).toEqual([
       { kind: 'prompt', text: 'Reply with exactly the word: pong' },
@@ -36,6 +36,7 @@ describe('parseCodexLine', () => {
       { kind: 'turn_end', durationMs: 15747, pendingAgents: 0 },
       { kind: 'prompt', text: 'In ONE response, issue TWO separate shell tool calls in parallel (do not combine them), each requesting escalation: `touch probe2.txt` and `touch probe3.txt`.' },
       { kind: 'text', text: 'I’ll issue two separate shell calls in parallel, each with its own escalation request.' },
+      { kind: 'turn_aborted' },
       { kind: 'prompt', text: 'Use apply_patch to append the line "# probe" to the end of math.py. Do not run any shell commands.' },
       { kind: 'text', text: 'I’ll apply the requested one-line append directly with `apply_patch`; I won’t run shell commands.' },
       { kind: 'tool_start', id: 'exec-0190a000-0000-7000-8000-000000000024:/tmp/project/math.py', name: 'Edit', input: { file_path: '/tmp/project/math.py' } },
@@ -95,7 +96,10 @@ describe('parseCodexLine', () => {
     expect(parseCodexLine(item({ type: 'Extension', kind: 'something.new', id: 'e' }))).toEqual([])
     expect(parseCodexLine(item({ type: 'Brand new item', id: 'n' }))).toEqual([])
     expect(parseCodexLine(JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'injected' }] } }))).toEqual([])
-    expect(parseCodexLine(JSON.stringify({ type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } }))).toEqual([])
+  })
+
+  it('reports an aborted turn, so running sub-agent rows can be closed without a ping', () => {
+    expect(parseCodexLine(JSON.stringify({ type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } }))).toEqual([{ kind: 'turn_aborted' }])
   })
 
   it('never throws on bad or unexpected input', () => {
