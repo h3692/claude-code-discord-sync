@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { configDirFor, readConfig, readToken } from './config.ts'
 import { main } from './index.ts'
+import { setup } from './setup.ts'
 
 const usage = `Usage: claude-code-discord-sync <command>
 
@@ -34,6 +35,13 @@ switch (command) {
     break
   }
   case 'setup':
+    try {
+      await setup()
+    } catch (e) {
+      console.error((e as Error).message)
+      process.exit(1)
+    }
+    break
   case 'status':
   case 'uninstall':
     console.error(`${command} is not available yet`)

@@ -36,6 +36,13 @@ describe('cli', () => {
     expect(r.stderr).toContain('claude-code-discord-sync setup')
   })
 
+  it('runs setup, which refuses an empty piped token before touching the network', () => {
+    const r = spawnSync(process.execPath, [cli, 'setup'], { encoding: 'utf8', env, input: '' })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/token/i)
+    expect(r.stderr).not.toContain('not available yet')
+  })
+
   it('still asks for setup when the config has ids but no token is stored', () => {
     mkdirSync(join(scratch, env.CCDS_NAME), { recursive: true })
     writeFileSync(join(scratch, env.CCDS_NAME, 'config.json'), JSON.stringify({ guildId: '111', userId: '222' }))
