@@ -193,7 +193,10 @@ export function step(state: State, input: Input): { state: State; actions: Actio
             // Claude Code's count can lag finished agents; agents started before we attached are only known to it.
             const running = s.agents.filter((a) => a.state === 'running').length
             const pending = s.agentIds.length ? Math.min(e.pendingAgents, running) : e.pendingAgents
-            actions.push({ type: 'send', ref: ref(), content: renderDone(e.durationMs, pending, s.userId), ping: true })
+            // A locked channel can't be acted on, so it never pings.
+            actions.push(s.lock
+              ? { type: 'send', ref: ref(), content: renderDone(e.durationMs, pending, null) }
+              : { type: 'send', ref: ref(), content: renderDone(e.durationMs, pending, s.userId), ping: true })
             break
           }
           case 'title': {
@@ -263,7 +266,9 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       }
       if (!s.card) {
         s.card = { ref: ref(), hash: dialog?.hash ?? null, screenHash: shown, dialog, answered: null, repeats: 0 }
-        actions.push({ type: 'send', ref: s.card.ref, content: `<@${s.userId}>`, embed, buttons, ping: true })
+        actions.push(s.lock
+          ? { type: 'send', ref: s.card.ref, embed, buttons }
+          : { type: 'send', ref: s.card.ref, content: `<@${s.userId}>`, embed, buttons, ping: true })
       }
       break
     }

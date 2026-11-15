@@ -87,11 +87,11 @@ export function renderPrompt(text: string): string[] {
   return chunk(['-# 🧑 from terminal', ...text.split('\n').flatMap(hardSplit).map((l) => (l ? `> ${l}` : '>'))])
 }
 
-export function renderDone(durationMs: number, pendingAgents: number, userId: string): string {
+export function renderDone(durationMs: number, pendingAgents: number, userId: string | null): string {
   const pending = pendingAgents > 0
     ? ` · ${pendingAgents} background agent${pendingAgents === 1 ? '' : 's'} still running`
     : ''
-  return `✅ Done in ${formatDuration(durationMs)} <@${userId}>${pending}`
+  return `✅ Done in ${formatDuration(durationMs)}${userId ? ` <@${userId}>` : ''}${pending}`
 }
 
 export function renderCard(screen: string): { title: string; description: string } {
