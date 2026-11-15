@@ -40,6 +40,17 @@ describe('newMirror', () => {
     expect(events(state, { kind: 'title', title: 'Fix the login bug' }).actions).toEqual([{ type: 'rename_channel', name: '🔒-proj-fix-the-login-bug' }])
   })
 
+  it('never pings from a locked channel, but still posts', () => {
+    const { state } = newMirror({ pid: 42, procStart, sessionId: 's1', cwd, name: 'x', pane: null, status: 'idle', readOnly: 'it is a background session' }, 'u1')
+    const done = sends(events(state, { kind: 'turn_end', durationMs: 1000, pendingAgents: 0 }).actions)
+    expect(done).toEqual([expect.objectContaining({ content: renderDone(1000, 0, null) })])
+    expect(done[0]).not.toHaveProperty('ping')
+    const card = sends(step(state, { kind: 'status', status: 'waiting', screen: null }).actions)
+    expect(card).toHaveLength(1)
+    expect(card[0]).not.toHaveProperty('ping')
+    expect(JSON.stringify(card[0])).not.toContain('<@u1>')
+  })
+
   it('restores the archive flag on reattach', () => {
     const { state, actions } = newMirror({ pid: 42, procStart, sessionId: 's1', cwd, name: 'x', pane: '%1', status: 'idle', archiveOnEnd: true }, 'u1')
     expect(state.archiveOnEnd).toBe(true)

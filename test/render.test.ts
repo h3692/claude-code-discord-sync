@@ -195,6 +195,12 @@ describe('renderCard', () => {
   })
 })
 
+describe('renderDone without a user', () => {
+  it('leaves out the mention', () => {
+    expect(renderDone(65000, 0, null)).toBe('✅ Done in 1m 5s')
+  })
+})
+
 describe('renderReadOnly', () => {
   it('says the channel is read-only, why, and how to get one you can type in', () => {
     expect(renderReadOnly('it is not running inside tmux')).toBe(
