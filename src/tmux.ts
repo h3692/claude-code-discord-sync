@@ -7,12 +7,15 @@ import { promisify } from 'node:util'
 import { powershell, runAsync } from './config.ts'
 import { sameStartFt, windowsStartTimes } from './sessions.ts'
 
-export type Dialog = { question: string; options: { n: number; label: string }[]; hash: string }
+// confirm: an option preview pane is shown, where a digit only moves the highlight and Enter answers.
+export type Dialog = { question: string; options: { n: number; label: string }[]; hash: string; confirm?: true }
 
 const OPTION = /^\s*(❯\s+)?(\d+)\.\s+(.+)$/
 const SEPARATOR = /^[\s─╌▔]+$/
 export const BORDER = /^ *─{10,} *$/
 const CHECKBOX = /^\[[ ✔xX✓]\]/
+// The preview pane AskUserQuestion draws beside its options; its art follows the highlight.
+const PREVIEW = /\s{2,}[┌│└├╭╰].*$/
 const PANE = /^%\d+$/
 // What may sit between a psmux pane's process and Claude Code on Windows.
 const SHELLS = new Set(['cmd.exe', 'powershell.exe', 'pwsh.exe'])
@@ -44,7 +47,7 @@ export function parseDialog(screen: string): Dialog | null {
     if (m && column(lines[i]) === col) {
       if (Number(m[2]) !== options.length + 1) return null
       if (m[1]) cursors++
-      options.push({ n: Number(m[2]), label: m[3].trimEnd() })
+      options.push({ n: Number(m[2]), label: m[3].replace(PREVIEW, '').trimEnd() })
     } else if (isBlank(i) || (!isSeparator(i) && lines[i].search(/\S/) <= col)) {
       break
     }
@@ -61,7 +64,12 @@ export function parseDialog(screen: string): Dialog | null {
   // Hash everything shown from the dialog's top border down, so a different command gets a different hash.
   // The highest border, not the nearest: plan approval draws one between the plan and the options.
   const top = lines.findIndex((l) => BORDER.test(l))
-  return { question, options, hash: hashBody(lines.slice(top < start ? top + 1 : 0, last + 1)) }
+  const first = top < start ? top + 1 : 0
+  // The pane is cut only beside the options, so box art in a command above them still changes the hash.
+  const rows = lines.slice(start, last + 1).map((l) => l.replace(PREVIEW, ''))
+  const hash = hashBody([...lines.slice(first, start), ...rows])
+  // The pane's top edge sits beside the first option; descriptions under normal options never flag it.
+  return PREVIEW.test(lines[start]) ? { question, options, hash, confirm: true } : { question, options, hash }
 }
 
 // Identifies a prompt that parseDialog can't read: the dialog region below the highest border, or the last 25 non-blank lines.

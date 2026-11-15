@@ -362,7 +362,10 @@ describe('step: prompt cards', () => {
     const r = waiting(s, 'approval_bash')
     expect(r.actions).toEqual([
       { type: 'edit', ref: a.state.card!.ref, content: '✅ Yes — via Discord', embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [] },
-      expect.objectContaining({ type: 'send', ref: r.state.card!.ref, ping: true, embed: renderCard(screen('approval_bash')) }),
+      expect.objectContaining({
+        type: 'send', ref: r.state.card!.ref, ping: true, embed: renderCard(screen('approval_bash')),
+        content: "<@u1>\n⚠️ That answer didn't go through — try again, or send `!keys Enter`",
+      }),
     ])
     expect(r.state.card).toMatchObject({ answered: null, repeats: 0 })
     expect(waiting(r.state, 'approval_bash').actions).toEqual([])
@@ -483,6 +486,13 @@ describe('step: prompt cards', () => {
       type: 'edit', ref: a.state.card!.ref, content: '✅ No — via Discord',
       embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [],
     }])
+  })
+
+  it('presses Enter after the digit only for a question with previews, where the digit just moves the highlight', () => {
+    const a = waiting(start().state, 'ask_preview')
+    expect(a.actions[0]).toMatchObject({ buttons: [{ label: '1. Single list' }, { label: '2. Separate category' }, { label: '3. Tabs' }] })
+    expect(click(a.state, 2, 'ask_preview').actions[0]).toEqual({ type: 'keys', keys: ['2', 'Enter'], hash: parseDialog(screen('ask_preview'))!.hash })
+    expect(click(waiting(start().state, 'ask_two').state, 2, 'ask_two').actions[0]).toMatchObject({ keys: ['2'] })
   })
 
   it('does not send twice on a double click', () => {

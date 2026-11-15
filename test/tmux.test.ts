@@ -56,6 +56,17 @@ describe('parseDialog', () => {
     expect(d?.options).toEqual([{ n: 1, label: 'Submit answers' }, { n: 2, label: 'Cancel' }])
   })
 
+  // There a digit only moves the highlight; Enter answers.
+  it('reads a question with previews without the preview pane, and flags that it needs Enter', async () => {
+    const d = parseDialog(await screen('ask_preview'))
+    expect(d?.question).toBe('Which layout?')
+    expect(d?.options).toEqual([{ n: 1, label: 'Single list' }, { n: 2, label: 'Separate category' }, { n: 3, label: 'Tabs' }])
+    expect(d?.confirm).toBe(true)
+    expect(parseDialog(await screen('ask_preview_moved'))?.hash).toBe(d?.hash) // the preview follows the highlight
+    expect(parseDialog((await screen('ask_preview')).replace('3. Tabs', '3. Grid'))?.hash).not.toBe(d?.hash)
+    expect(parseDialog(await screen('ask_single'))?.confirm).toBeUndefined()
+  })
+
   it('rejects the trust screen and multi-select questions', async () => {
     expect(parseDialog(await screen('trust'))).toBeNull()
     expect(parseDialog(await screen('ask_multi'))).toBeNull()
