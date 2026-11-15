@@ -436,11 +436,15 @@ describe.skipIf(process.platform === 'win32' || !has('tmux', '-V') || !has('lsof
     const work = join(dir, 'work')
     await mkdir(work)
     await mkdir(join(dir, 'bin'))
-    // node, not sleep: newer Ubuntu's sleep is a multi-call binary that exits when invoked as `codex`.
-    await symlink(process.execPath, join(dir, 'bin', 'codex'))
+    // The stand-in must keep `codex` as its process name: Ubuntu's multi-call sleep exits under another name,
+    // and node renames its thread to MainThread, so Linux uses python3 and macOS uses sleep.
+    const linux = process.platform !== 'darwin'
+    const real = execFileSync('sh', ['-c', `command -v ${linux ? 'python3' : 'sleep'}`], { encoding: 'utf8' }).trim()
+    await symlink(real, join(dir, 'bin', 'codex'))
+    const args = linux ? `-c 'import time; time.sleep(60)'` : '60'
     await writeFile(join(dir, 'screen.txt'), '\n\n› Ask Codex to do anything\n\n  model high · /w\n  ? for shortcuts')
     // Exactly as tall as the screen, so its last row is the pane's last row.
-    tmux('-f', '/dev/null', 'new-session', '-d', '-x', '60', '-y', '6', '-c', work, `cat '${dir}/screen.txt'; exec '${dir}/bin/codex' -e 'setTimeout(() => {}, 60000)'`)
+    tmux('-f', '/dev/null', 'new-session', '-d', '-x', '60', '-y', '6', '-c', work, `cat '${dir}/screen.txt'; exec '${dir}/bin/codex' ${args}`)
     const pane = tmux('list-panes', '-F', '#{pane_id}').trim()
     const pid = Number(tmux('display-message', '-p', '-t', pane, '#{pane_pid}').trim())
     const home = join(dir, 'home')
