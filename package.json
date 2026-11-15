@@ -15,7 +15,7 @@
     "node": ">=24.12"
   },
   "scripts": {
-    "prepare": "tsc",
+    "prepack": "tsc",
     "start": "node src/cli.ts start",
     "test": "vitest run"
   },
