@@ -320,13 +320,15 @@ export async function listCodexSessions(
     // (lsof exits 1 but still prints the live ones), so a lookup error counts only when no TUI got a cwd.
     // Linux reads /proc, since lsof isn't on every install.
     let failure: unknown = null
-    const cwds = platform === 'linux'
-      ? new Map((await Promise.all(procs.map(async (p) => [p.pid, await readlink(`/proc/${p.pid}/cwd`).catch((e) => void (failure = e))] as const)))
-        .filter((e): e is readonly [number, string] => !!e[1]))
-      : parseCwds(await run('lsof', ['-a', '-p', procs.map((p) => p.pid).join(','), '-d', 'cwd', '-Fn']).catch((e) => {
+    let cwds = new Map<number, string>()
+    if (platform === 'linux') {
+      for (const p of procs) await readlink(`/proc/${p.pid}/cwd`).then((cwd) => cwds.set(p.pid, cwd), (e) => (failure = e))
+    } else {
+      cwds = parseCwds(await run('lsof', ['-a', '-p', procs.map((p) => p.pid).join(','), '-d', 'cwd', '-Fn']).catch((e) => {
         failure = e
         return e.stdout ?? ''
       }))
+    }
     if (failure && !tuis.some((p) => cwds.has(p.pid))) throw failure
     const sharing = new Map<string, number>()
     for (const cwd of cwds.values()) sharing.set(cwd, (sharing.get(cwd) ?? 0) + 1)
