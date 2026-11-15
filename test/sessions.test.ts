@@ -11,13 +11,6 @@ const exec = promisify(execFile)
 let procStart: string
 let deadPid: number
 
-beforeAll(async () => {
-  procStart = (await exec('ps', ['-o', 'lstart=', '-p', String(process.pid)], { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } })).stdout.trim()
-  const child = spawn('true')
-  await new Promise((resolve) => child.on('exit', resolve))
-  deadPid = child.pid!
-})
-
 async function setup(entries: Record<string, unknown>) {
   const root = await mkdtemp(join(tmpdir(), 'ccds-sessions-'))
   const sessionsDir = join(root, 'sessions')
@@ -34,7 +27,15 @@ const live = (over: Record<string, unknown>) => ({
   pid: process.pid, procStart, cwd: '/Users/me/proj', name: 'proj-1', kind: 'interactive', status: 'idle', startedAt: 1, ...over,
 })
 
-describe('listSessions', () => {
+// Needs ps and true.
+describe.skipIf(process.platform === 'win32')('listSessions', () => {
+  beforeAll(async () => {
+    procStart = (await exec('ps', ['-o', 'lstart=', '-p', String(process.pid)], { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } })).stdout.trim()
+    const child = spawn('true')
+    await new Promise((resolve) => child.on('exit', resolve))
+    deadPid = child.pid!
+  })
+
   it('keeps live sessions and maps their fields, parsing the pane and finding the transcript', async () => {
     const { sessionsDir, projectsDir } = await setup({
       'a.json': live({ sessionId: 'sid-a', tmux: '0:@0.%11', status: 'waiting' }),

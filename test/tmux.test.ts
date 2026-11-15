@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
-import { capture, checkPane, parseDialog, parseKeys, pasteText, sanitizePaste, screenHash, sendKeys } from '../src/tmux.ts'
+import { capture, checkPane, parseDialog, parseKeys, pasteText, sameTty, sanitizePaste, screenHash, sendKeys } from '../src/tmux.ts'
 
 const screen = (name: string) => readFile(new URL(`./fixtures/screens/${name}.txt`, import.meta.url), 'utf8')
 
@@ -164,6 +164,16 @@ describe('sanitizePaste', () => {
   })
 })
 
+describe('sameTty', () => {
+  it('matches the pane tty to the ps tty on macOS and Linux', () => {
+    expect(sameTty('/dev/ttys003', 'ttys003')).toBe(true)
+    expect(sameTty('/dev/pts/3', 'pts/3')).toBe(true)
+    expect(sameTty('/dev/pts/3', 'pts/30')).toBe(false)
+    expect(sameTty('/dev/pts/3', '3')).toBe(false)
+    expect(sameTty('/dev/ttys003', '??')).toBe(false)
+  })
+})
+
 const hasTmux = (() => {
   try {
     execFileSync('tmux', ['-V'])
@@ -173,7 +183,8 @@ const hasTmux = (() => {
   }
 })()
 
-describe.skipIf(!hasTmux)('tmux exec wrappers', () => {
+// Needs ps, pgrep and POSIX signals besides tmux.
+describe.skipIf(!hasTmux || process.platform === 'win32')('tmux exec wrappers', () => {
   const socket = `ccds-test-${randomBytes(4).toString('hex')}`
   const tmux = (...args: string[]) => execFileSync('tmux', ['-L', socket, ...args], { encoding: 'utf8' })
   let pane = ''

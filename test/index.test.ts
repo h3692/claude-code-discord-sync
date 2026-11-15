@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, freshEvents, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import { acquireLock, freshEvents, lockDirFor, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
 import { newMirror } from '../src/mirror.ts'
 
 const lockPath = () => join(mkdtempSync(join(tmpdir(), 'ccds-lock-')), 'lock')
@@ -21,7 +21,8 @@ function deferred<T>() {
 
 afterEach(() => vi.restoreAllMocks())
 
-describe('acquireLock', () => {
+// Needs ps and true.
+describe.skipIf(process.platform === 'win32')('acquireLock', () => {
   let deadPid: number
   beforeAll(async () => {
     const child = spawn('true')
@@ -71,6 +72,22 @@ describe('acquireLock', () => {
       writeFileSync(path, body)
       expect(acquireLock(path)).toBe(true)
     }
+  })
+})
+
+describe('lockDirFor', () => {
+  it('keeps the lock in ~/Library/Caches on macOS', () => {
+    expect(lockDirFor('darwin', { XDG_CONFIG_HOME: '/x' }, '/Users/me')).toBe(join('/Users/me', 'Library', 'Caches'))
+  })
+
+  it('uses the config folder on Linux, honouring XDG_CONFIG_HOME', () => {
+    expect(lockDirFor('linux', {}, '/home/me')).toBe(join('/home/me', '.config', 'claude-code-discord-sync'))
+    expect(lockDirFor('linux', { XDG_CONFIG_HOME: '/cfg' }, '/home/me')).toBe(join('/cfg', 'claude-code-discord-sync'))
+  })
+
+  it('uses %APPDATA% on Windows', () => {
+    const appData = 'C:\\Users\\me\\AppData\\Roaming'
+    expect(lockDirFor('win32', { APPDATA: appData }, 'C:\\Users\\me')).toBe(join(appData, 'claude-code-discord-sync'))
   })
 })
 

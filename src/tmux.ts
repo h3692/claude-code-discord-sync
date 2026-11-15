@@ -1,6 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { basename } from 'node:path'
 import { promisify } from 'node:util'
 
 export type Dialog = { question: string; options: { n: number; label: string }[]; hash: string }
@@ -97,6 +96,11 @@ export async function capture(pane: string): Promise<string> {
   return (await tmux('capture-pane', '-p', '-J', '-t', pane)).stdout
 }
 
+// tmux prints /dev/ttys003 or /dev/pts/3 where ps prints ttys003 or pts/3.
+export function sameTty(paneTty: string, tty: string): boolean {
+  return paneTty.replace(/^\/dev\//, '') === tty
+}
+
 // Confirms the pane still belongs to the registered Claude process before we type into it.
 export async function checkPane(pane: string, pid: number, procStart: string): Promise<string | null> {
   if (!PANE.test(pane)) return 'invalid tmux pane id'
@@ -117,7 +121,7 @@ export async function checkPane(pane: string, pid: number, procStart: string): P
     // display-message prints nothing (and exits 0) for a pane that no longer exists.
     const [paneTty, inMode] = (await tmux('display-message', '-p', '-t', pane, '#{pane_tty} #{pane_in_mode}')).stdout.trim().split(' ')
     if (!paneTty) return 'tmux pane not found'
-    if (basename(paneTty) !== tty) return 'tmux pane is not running this session'
+    if (!sameTty(paneTty, tty)) return 'tmux pane is not running this session'
     // A stopped or background Claude would leave the paste to whatever owns the terminal, usually the shell.
     if (stat.includes('T')) return 'Claude Code is suspended (Ctrl-Z)'
     if (!stat.includes('+')) return 'Claude Code is not in the foreground of its terminal'

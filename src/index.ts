@@ -37,6 +37,12 @@ function isWatcher(pid: number): boolean {
   }
 }
 
+export function lockDirFor(platform: string, env: Record<string, string | undefined>, home: string): string {
+  if (platform === 'darwin') return join(home, 'Library', 'Caches')
+  if (platform === 'win32') return join(env.APPDATA || join(home, 'AppData', 'Roaming'), 'claude-code-discord-sync')
+  return join(env.XDG_CONFIG_HOME || join(home, '.config'), 'claude-code-discord-sync')
+}
+
 // shortcut: two watchers starting in the same instant over a stale lock can both win; fine for a LaunchAgent.
 export function acquireLock(path: string): boolean {
   try {
@@ -187,7 +193,7 @@ function main(): void {
   const projectsDir = join(claudeDir, 'projects')
   const ttl = Number(process.env.CCDS_ENDED_TTL_MS) || 3_600_000
 
-  const lockDir = join(homedir(), 'Library', 'Caches')
+  const lockDir = lockDirFor(process.platform, process.env, homedir())
   mkdirSync(lockDir, { recursive: true })
   const lockPath = join(lockDir, 'claude-code-discord-sync.lock')
   if (!acquireLock(lockPath)) {
