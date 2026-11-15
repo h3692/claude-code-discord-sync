@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
-  acquireLock, CATEGORY, codexStart, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, serialQueue, shouldConfirm,
+  acquireLock, CATEGORY, codexStart, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, seenAfterChange, serialQueue, shouldConfirm,
   startOffset, typeCodex, typingRefusal, unanswer,
 } from '../src/index.ts'
 import { parseCodexLine } from '../src/codex.ts'
@@ -394,10 +394,10 @@ describe('typeCodex', () => {
     // The status row differs, but only the composer counts.
     const after = at('idle', 'idle_draft')
     after.screen = after.screen!.replace('· /tmp/project', '· /tmp/project · Reply with pong')
-    // Read six times over the redraw window before giving up.
+    // Only two re-reads after the paste, so Enter still lands inside Codex's 1 s hold on approvals after typing.
     const t = io([at('idle', 'idle_draft'), ...Array(6).fill(after)])
     expect(await typeCodex('hello', false, t.io)).toBe("pasted but not sent — Codex didn't take the text; check the terminal")
-    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', ...retries])
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', ...retries.slice(0, 4)])
   })
 
   it('reports a message Codex kept in its composer after Enter, so it is not marked sent', async () => {
@@ -530,5 +530,12 @@ describe('readOnlyReason', () => {
     expect(readOnlyReason({ interactive: false, pane: '%3' }, 'darwin', {})).toBe('it is a background session')
     expect(readOnlyReason({ interactive: true, pane: null }, 'linux', {})).toBe('it is not running inside tmux')
     expect(readOnlyReason(tmuxed, 'win32', {})).toBe('typing on Windows is off (set CCDS_WINDOWS_TYPING=1)')
+  })
+})
+
+describe('seenAfterChange', () => {
+  it('reaches back one wide-scan period for Codex, whose resumed thread is only noticed by the 30 s scan', () => {
+    expect(seenAfterChange('codex', 100_000)).toBe(70_000)
+    expect(seenAfterChange('claude', 100_000)).toBe(100_000)
   })
 })

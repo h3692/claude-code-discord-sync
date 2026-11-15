@@ -140,10 +140,10 @@ export async function typeCodex(text: string, ambiguous: boolean, io: {
   if (first.state !== 'idle') return first.state === 'waiting' ? 'a prompt is open — use the buttons or `!keys`' : "can't confirm Codex is at its prompt"
   const pane = await io.checkPane()
   if (pane) return pane
-  // A slow redraw shows the frame from before for a while, so a read that looks unchanged is retried five times.
-  const settle = async (unchanged: (s: { state: string | null; screen: string | null }) => boolean) => {
+  // A slow redraw shows the frame from before for a while, so a read that looks unchanged is retried.
+  const settle = async (tries: number, unchanged: (s: { state: string | null; screen: string | null }) => boolean) => {
     let s = await io.state()
-    for (let i = 0; i < 5 && unchanged(s); i++) {
+    for (let i = 0; i < tries && unchanged(s); i++) {
       await io.wait()
       s = await io.state()
     }
@@ -152,14 +152,15 @@ export async function typeCodex(text: string, ambiguous: boolean, io: {
   const before = codexComposer(first.screen ?? '')
   await io.paste()
   // A stale frame or a composer that dropped the paste still reads idle; only a changed composer shows the text landed.
-  const pasted = await settle((s) => s.state === 'idle' && codexComposer(s.screen ?? '') === before)
+  // Two retries only: Enter must land within Codex's 1 s hold on approvals after typing.
+  const pasted = await settle(2, (s) => s.state === 'idle' && codexComposer(s.screen ?? '') === before)
   // The paste itself can open a popup (`@word`, `/`), where Enter would pick an item instead of sending.
   if (pasted.state !== 'idle') return "pasted but not sent — Codex isn't at its prompt; check the terminal"
   const draft = codexComposer(pasted.screen ?? '')
   if (draft === before) return "pasted but not sent — Codex didn't take the text; check the terminal"
   await io.enter()
   // Codex keeps text it won't submit (an unrecognised /command) in the composer. Any other screen counts as sent.
-  const after = await settle((s) => s.state === 'idle' && codexComposer(s.screen ?? '') === draft)
+  const after = await settle(5, (s) => s.state === 'idle' && codexComposer(s.screen ?? '') === draft)
   if (after.state === 'idle' && codexComposer(after.screen ?? '') === draft) {
     return 'Codex kept the message in its composer instead of sending it — check the terminal'
   }
@@ -252,6 +253,11 @@ function payload(a: Extract<Action, { type: 'send' | 'edit' }>) {
 }
 
 export type Settings = { token: string; guildId: string; userId: string; claudeDir: string; codexHome: string; ttl: number }
+
+// Codex's wide scan notices an in-TUI /resume of an old thread up to 30 s late; reach back that far so its first turn isn't dropped.
+export function seenAfterChange(provider: string, now: number): number {
+  return provider === 'codex' ? now - 30_000 : now
+}
 
 // Why Discord can't type into a session, for its channel; null when it can.
 export function readOnlyReason(s: { interactive: boolean; pane: string | null }, platform: string, env: Record<string, string | undefined>): string | null {
@@ -537,7 +543,7 @@ export function main({ token, guildId, userId, claudeDir, codexHome, ttl }: Sett
         if (e.state.sessionId) {
           e.transcript = null
           e.from = 'birth'
-          e.seenAt = now
+          e.seenAt = seenAfterChange(s.provider, now)
         }
         apply(e, { kind: 'session_changed', sessionId: s.sessionId })
       }
