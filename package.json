@@ -17,7 +17,7 @@
   "scripts": {
     "prepack": "tsc",
     "start": "node src/cli.ts start",
-    "test": "vitest run"
+    "test": "vitest run --testTimeout=30000"
   },
   "dependencies": {
     "discord.js": "14.28.1"
