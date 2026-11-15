@@ -8,7 +8,7 @@ import {
 } from '../src/setup.ts'
 
 const fake = 'dummy.token-123'
-const OWNER = '528659982686879764'
+const OWNER = '100000000000000017'
 const guild = (id: string, permissions = '85072', approximate_member_count = 2) => ({ id, name: `Server ${id}`, permissions, approximate_member_count })
 
 describe('inviteUrl', () => {
@@ -161,7 +161,7 @@ const app = (over: Record<string, unknown> = {}) => ({
 const happy = (over: Routes = {}): Routes => ({
   'GET /users/@me': (_: unknown, auth: string) => me(auth),
   'GET /applications/@me': app(),
-  'GET /users/@me/guilds?with_counts=true': [guild('892877557492510771')],
+  'GET /users/@me/guilds?with_counts=true': [guild('200000000000000029')],
   ...over,
 })
 
@@ -170,12 +170,12 @@ describe('setup (non-TTY)', () => {
     const h = harness(happy())
     await setup(h.io)
     expect(h.saved).toEqual([fake])
-    expect(h.config()).toEqual({ guildId: '892877557492510771', userId: OWNER })
+    expect(h.config()).toEqual({ guildId: '200000000000000029', userId: OWNER })
     expect(h.calls.every((c) => c.auth === `Bot ${fake}`)).toBe(true)
     expect(h.calls.some((c) => c.method !== 'GET')).toBe(false) // intent on, avatar set: nothing to change
     expect(h.opened).toEqual([]) // token came on stdin, bot already in a server
     expect(h.output()).not.toContain(fake)
-    expect(h.output()).toContain('Server 892877557492510771')
+    expect(h.output()).toContain('Server 200000000000000029')
     expect(h.output()).toContain(`Who may type: me (${OWNER})`)
     expect(h.installs).toEqual(['install']) // no terminal: start at login by default
     expect(h.lines.slice(-2)).toEqual(['installed', 'Start Claude Code inside tmux and a channel appears.'])
@@ -233,7 +233,7 @@ describe('setup (non-TTY)', () => {
     const team = { owner_user_id: OWNER, members: [{ user: { id: OWNER, username: 'boss' } }] }
     for (const a of [app(), app({ owner: { id: '999', username: 'team', flags: 1024 }, team })]) {
       const h = harness(happy({ 'GET /applications/@me': a }))
-      writeConfig(h.io.configPath, { guildId: '892877557492510771', userId: other })
+      writeConfig(h.io.configPath, { guildId: '200000000000000029', userId: other })
       await setup(h.io)
       expect(h.config().userId).toBe(other)
     }
@@ -244,7 +244,7 @@ describe('setup (non-TTY)', () => {
     writeFileSync(h.io.configPath, 'null')
     await setup(h.io)
     expect(h.output()).toContain(`Warning: ignoring the unreadable ${h.io.configPath}`)
-    expect(h.config()).toEqual({ guildId: '892877557492510771', userId: OWNER })
+    expect(h.config()).toEqual({ guildId: '200000000000000029', userId: OWNER })
   })
 
   it('asks for a new token when the stored one no longer works', async () => {
@@ -294,7 +294,7 @@ describe('setup (non-TTY)', () => {
     await setup(h.io)
     expect(h.opened).toEqual(['https://discord.com/developers/applications/app1/bot'])
     expect(h.output()).toContain('https://discord.com/developers/applications/app1/bot') // URL always printed too
-    expect(h.config().guildId).toBe('892877557492510771')
+    expect(h.config().guildId).toBe('200000000000000029')
   })
 
   it('gives up on Message Content after 10 minutes', async () => {
@@ -311,7 +311,7 @@ describe('setup (non-TTY)', () => {
 
     const bad = harness(happy({ 'GET /users/@me': noAvatar, 'PATCH /users/@me': new Response('{}', { status: 400 }) }))
     await setup(bad.io)
-    expect(bad.config().guildId).toBe('892877557492510771')
+    expect(bad.config().guildId).toBe('200000000000000029')
   })
 
   it('warns when the bot is Public', async () => {
@@ -377,13 +377,13 @@ describe('setup (TTY)', () => {
     const other = '123456789012345678'
     const routes = happy({ [`GET /users/${other}`]: { id: other, username: 'friend' } })
     const kept = harness(routes, { tty: true, answers: ['', ''] })
-    writeConfig(kept.io.configPath, { guildId: '892877557492510771', userId: other })
+    writeConfig(kept.io.configPath, { guildId: '200000000000000029', userId: other })
     await setup(kept.io)
     expect(kept.questions[0]).toBe('Keep friend as the only user who can type? [Y/n] ')
     expect(kept.config().userId).toBe(other)
 
     const changed = harness(routes, { tty: true, answers: ['n', '', ''] })
-    writeConfig(changed.io.configPath, { guildId: '892877557492510771', userId: other })
+    writeConfig(changed.io.configPath, { guildId: '200000000000000029', userId: other })
     await setup(changed.io)
     expect(changed.questions[1]).toMatch(/^Only me .* OK\? \[Y\/n\] $/)
     expect(changed.config().userId).toBe(OWNER)
