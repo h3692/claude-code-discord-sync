@@ -375,7 +375,11 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
     }
     mirrors.set(state.key, e)
     // An existing channel replaces create_channel; its current name stops a needless rename.
-    if (channel) e.state = { ...state, channel: channel.name }
+    if (channel && state.lock && !channel.name.startsWith(state.lock)) {
+      // Channels made before read-only marking existed get the lock and the explanation now.
+      e.state = { ...state, channel: state.lock + channel.name }
+      void queue(state.key, () => execute(e, [{ type: 'rename_channel', name: e.state.channel }, ...actions.filter((a) => a.type === 'send')]))
+    } else if (channel) e.state = { ...state, channel: channel.name }
     else void queue(state.key, () => execute(e, actions))
     return e
   }
