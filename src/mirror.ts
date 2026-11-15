@@ -54,6 +54,7 @@ const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!k
 const NO_TMUX = "Claude is waiting for you, but this session isn't in tmux — answer at the terminal."
 const NO_SCREEN = "Claude is waiting for you, but the screen couldn't be read — answer at the terminal, or try `!keys`."
 const CLOSED = 'That prompt is no longer open.'
+const RETRY = "\n⚠️ That question is still open — try again, or send `!keys Enter`"
 const READ_ONLY = "👀 Read-only: this session isn't running in tmux."
 const BAD_KEYS = '⌨️ Allowed keys: digits 0-9, Up, Down, Left, Right, Enter, Escape, Tab, BTab, Space, BSpace (max 20). Example: `!keys Down Enter`'
 
@@ -248,6 +249,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         embed.description += HINT
       }
       const shown = input.screen ? screenHash(input.screen) : null
+      let retry = false
       if (s.card) {
         // A readable prompt is compared by its dialog hash, an unreadable one by its screen; a failed capture tells nothing.
         const same = dialog ? dialog.hash === s.card.hash : shown !== null && shown === s.card.screenHash
@@ -255,6 +257,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         const repeats = s.card.answered && same ? s.card.repeats + 1 : 0
         if (s.card.answered && (changed || repeats >= REPEATS)) {
           // A new prompt after an answer from Discord gets its own card and ping.
+          retry = !changed
           closeCard(`✅ ${s.card.answered} — via Discord`, '✅ Answered')
         } else if (changed) {
           // Buttons are replaced too, so an unreadable prompt doesn't keep the old prompt's.
@@ -268,7 +271,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         s.card = { ref: ref(), hash: dialog?.hash ?? null, screenHash: shown, dialog, answered: null, repeats: 0 }
         actions.push(s.lock
           ? { type: 'send', ref: s.card.ref, embed, buttons }
-          : { type: 'send', ref: s.card.ref, content: `<@${s.userId}>`, embed, buttons, ping: true })
+          : { type: 'send', ref: s.card.ref, content: `<@${s.userId}>${retry ? RETRY : ''}`, embed, buttons, ping: true })
       }
       break
     }
@@ -281,7 +284,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         actions.push({ type: 'reply', replyTo: input.id, content: 'Already sent.' })
       } else {
         s.card = { ref: s.card.ref, hash: dialog.hash, screenHash: screenHash(input.screen!), dialog, answered: option.label, repeats: 0 }
-        actions.push({ type: 'keys', keys: [String(option.n)], hash: dialog.hash })
+        actions.push({ type: 'keys', keys: dialog.confirm ? [String(option.n), 'Enter'] : [String(option.n)], hash: dialog.hash })
         actions.push({
           type: 'edit', ref: s.card.ref, content: `⏳ sending ${option.n}. ${option.label}…`,
           embed: { title: '⏳ Sending', description: dialog.question }, buttons: [],
