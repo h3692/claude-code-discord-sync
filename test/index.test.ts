@@ -321,6 +321,7 @@ describe('freshEvents for Codex', () => {
 describe('typeCodex', () => {
   const at = (state: string, name?: string) => ({ state, screen: name ? readFileSync(new URL(`./fixtures/codex/screens/${name}.txt`, import.meta.url), 'utf8') : null })
   const sent = () => [at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_empty')]
+  const retries = Array(5).fill(['wait', 'state']).flat()
   function io(states: { state: string; screen: string | null }[], pane: string | null = null, fail = false) {
     const calls: string[] = []
     return {
@@ -333,9 +334,19 @@ describe('typeCodex', () => {
           if (fail) throw new Error('tmux load-buffer exited with 1')
         },
         enter: async () => void calls.push('enter'),
+        wait: async () => void calls.push('wait'),
       },
     }
   }
+
+  it('reads again while a slow redraw still shows the old composer, after the paste and after Enter', async () => {
+    const pasteSlow = io([at('idle', 'idle_empty'), at('idle', 'idle_empty'), at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_empty')])
+    expect(await typeCodex('hello', false, pasteSlow.io)).toBeNull()
+    expect(pasteSlow.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'wait', 'state', 'wait', 'state', 'enter', 'state'])
+    const enterSlow = io([at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_draft'), at('idle', 'idle_draft'), at('idle', 'idle_empty')])
+    expect(await typeCodex('hello', false, enterSlow.io)).toBeNull()
+    expect(enterSlow.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state', 'wait', 'state', 'wait', 'state'])
+  })
 
   it('checks the screen and the pane, pastes, sees the composer change, presses Enter, then sees it cleared', async () => {
     const t = io(sent())
@@ -383,15 +394,16 @@ describe('typeCodex', () => {
     // The status row differs, but only the composer counts.
     const after = at('idle', 'idle_draft')
     after.screen = after.screen!.replace('· /tmp/project', '· /tmp/project · Reply with pong')
-    const t = io([at('idle', 'idle_draft'), after])
+    // Read six times over the redraw window before giving up.
+    const t = io([at('idle', 'idle_draft'), ...Array(6).fill(after)])
     expect(await typeCodex('hello', false, t.io)).toBe("pasted but not sent — Codex didn't take the text; check the terminal")
-    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state'])
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', ...retries])
   })
 
   it('reports a message Codex kept in its composer after Enter, so it is not marked sent', async () => {
-    const t = io([at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_draft')])
+    const t = io([at('idle', 'idle_empty'), ...Array.from({ length: 7 }, () => at('idle', 'idle_draft'))])
     expect(await typeCodex('/foo bar', false, t.io)).toBe('Codex kept the message in its composer instead of sending it — check the terminal')
-    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state'])
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state', ...retries])
   })
 
   it('counts a message as sent when Enter leaves the prompt (an approval opened)', async () => {

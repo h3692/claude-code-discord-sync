@@ -193,6 +193,8 @@ Limits:
 - With two Codex sessions in the same folder, their output may mix in both channels, and typing into them is refused.
   Approval buttons still work.
 - Codex running outside tmux isn't mirrored.
+- An approval that opens in the instant between the watcher's last check and its Enter receives that Enter. Codex
+  waits about a second after typing before it shows an approval, so this is rare, but reading the screen can't rule it out.
 - Codex's status line must show its default model · folder row. A custom `/statusline` without it means Codex
   sessions aren't recognised.
 - Codex isn't supported on native Windows.

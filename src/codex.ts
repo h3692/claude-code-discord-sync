@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import { access, readdir, readlink, realpath, stat } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, join, relative } from 'node:path'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
 import type { Session } from './sessions.ts'
@@ -269,8 +269,8 @@ async function readRollouts(sessionsDir: string, files: string[], cwd: string, s
   return rollouts
 }
 
-// When each TUI last looked through every date folder.
-const wideScans = new Map<string, number>()
+// When each TUI last looked through every date folder, and the rollout (relative to sessionsDir) it picked then.
+const wideScans = new Map<string, { at: number; path: string | null }>()
 
 // shortcut: never pruned, one small entry per exited TUI; drop entries older than a day if that ever matters.
 const exited: Exited[] = []
@@ -278,12 +278,17 @@ const exited: Exited[] = []
 async function findRollout(sessionsDir: string, cwd: string, start: number, key: string): Promise<Rollout | null> {
   const recent = await Promise.all(dateFolders(new Date(start), new Date()).map((d) =>
     readdir(join(sessionsDir, d)).then((files) => files.map((f) => join(d, f)), () => [])))
-  const found = pickRollout(await readRollouts(sessionsDir, recent.flat(), cwd, start), cwd, start, exited)
-  // `codex resume` appends to the thread's file in the folder of the day it was created, however long ago.
-  if (found || Date.now() - (wideScans.get(key) ?? -Infinity) < 30_000) return found
-  wideScans.set(key, Date.now())
-  const all = await readdir(sessionsDir, { recursive: true }).catch(() => [])
-  return pickRollout(await readRollouts(sessionsDir, all, cwd, start), cwd, start, exited)
+  // `codex resume`, or /resume inside the TUI, appends to the thread's file in the folder of the day it was created,
+  // however long ago. So every 30 seconds every folder is read, and its pick competes with the recent ones until then.
+  let wide = wideScans.get(key)
+  if (!wide || Date.now() - wide.at >= 30_000) {
+    const all = await readdir(sessionsDir, { recursive: true }).catch(() => [])
+    const picked = pickRollout(await readRollouts(sessionsDir, all, cwd, start), cwd, start, exited)
+    wide = { at: Date.now(), path: picked && relative(sessionsDir, picked.path) }
+    wideScans.set(key, wide)
+  }
+  const files = wide.path ? [...recent.flat(), wide.path] : recent.flat()
+  return pickRollout(await readRollouts(sessionsDir, files, cwd, start), cwd, start, exited)
 }
 
 // `${pid}|${procStart}` of Codex processes whose pane has shown the TUI (composer or approval) at least once,
@@ -323,7 +328,11 @@ export async function listCodexSessions(
     for (const k of recognised) if (!live.has(k)) recognised.delete(k)
     for (const k of wideScans.keys()) if (!live.has(k)) wideScans.delete(k)
     for (const s of prev) {
-      if (s.provider === 'codex' && !live.has(`${s.pid}|${s.procStart}`)) exited.push({ cwd: s.cwd, start: Date.parse(`${s.procStart} UTC`), end: Date.now() })
+      const start = Date.parse(`${s.procStart} UTC`)
+      // A failed list returns prev, so the same exit shows again next tick; the first sighting keeps its end.
+      if (s.provider === 'codex' && !live.has(`${s.pid}|${s.procStart}`) && !exited.some((x) => x.cwd === s.cwd && x.start === start)) {
+        exited.push({ cwd: s.cwd, start, end: Date.now() })
+      }
     }
     if (!tuis.length) return []
 

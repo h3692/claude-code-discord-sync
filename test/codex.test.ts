@@ -418,6 +418,64 @@ describe('listCodexSessions', () => {
     }
   })
 
+  // An in-TUI /resume of an old thread, while a thread from today's folder also matches.
+  it('switches to an old thread resumed inside the TUI within one wide scan, keeps it, and still follows a newer thread', async () => {
+    const dir = await realpath(await mkdtemp(join(home, 'inresume-')))
+    const write = async (d: string, id: string, mtime: number) => {
+      await mkdir(join(home, 'sessions', d), { recursive: true })
+      const path = join(home, 'sessions', d, `rollout-x-${id}.jsonl`)
+      await writeFile(path, JSON.stringify({ type: 'session_meta', payload: { id, cwd: dir, originator: 'codex-tui', thread_source: 'user', history_mode: 'paginated' } }) + '\n')
+      await utimes(path, new Date(mtime), new Date(mtime))
+      return path
+    }
+    await write(folder, 'today', startMs + 1_000)
+    const idle = { '%17': await screen('idle_empty') }
+    const list = async () => (await listCodexSessions(home, [], quiet, fake([{ pid: 117, tty: 'ttys117', cwd: dir }], { ttys117: '%17' }, idle).run, 'darwin'))[0].sessionId
+    try {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      expect(await list()).toBe('today')
+      const old = new Date(startMs - 5 * 86_400_000)
+      await write(`${old.getFullYear()}/${String(old.getMonth() + 1).padStart(2, '0')}/${String(old.getDate()).padStart(2, '0')}`, 'old', startMs + 2_000)
+      vi.setSystemTime(Date.now() + 30_000)
+      expect(await list()).toBe('old')
+      // The next ticks are inside the 30 seconds, so they don't look through every folder, yet keep the old thread.
+      expect(await list()).toBe('old')
+      expect(await list()).toBe('old')
+      await write(folder, 'new', startMs + 3_000)
+      expect(await list()).toBe('new')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('records a TUI exit once, even while lsof keeps failing, so a later thread of the survivor still matches', async () => {
+    const dir = await realpath(await mkdtemp(join(home, 'exitonce-')))
+    await mkdir(join(home, 'sessions', folder), { recursive: true })
+    const idle = { '%18': await screen('idle_empty') }
+    const a = { pid: 118, tty: 'ttys118', cwd: dir }
+    const ok = fake([a], { ttys118: '%18' }, idle).run
+    const lsofFails = async (file: string, args: string[]) => {
+      if (file === 'lsof') throw Object.assign(new Error('Command failed: lsof'), { code: 1, stdout: '' })
+      return ok(file, args)
+    }
+    const prev = [
+      { pid: 118, procStart: START, cwd: dir, provider: 'codex' },
+      { pid: 119, procStart: START, cwd: dir, provider: 'codex' },
+    ] as any
+    try {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      // 119 is gone; lsof fails, so the previous list (still holding 119) comes back.
+      expect(await listCodexSessions(home, prev, quiet, lsofFails, 'darwin')).toBe(prev)
+      const path = join(home, 'sessions', folder, 'rollout-x-later.jsonl')
+      await writeFile(path, JSON.stringify({ type: 'session_meta', payload: { id: 'later', cwd: dir, originator: 'codex-tui', thread_source: 'user', history_mode: 'paginated' } }) + '\n')
+      await utimes(path, new Date(Date.now() + 10 * 60_000), new Date(Date.now() + 10 * 60_000))
+      vi.setSystemTime(Date.now() + 20 * 60_000)
+      expect(await listCodexSessions(home, prev, quiet, ok, 'darwin')).toMatchObject([{ pid: 118, sessionId: 'later' }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('stops matching the threads of a same-folder TUI once it exits', async () => {
     const dir = await realpath(await mkdtemp(join(home, 'pair-')))
     await mkdir(join(home, 'sessions', folder), { recursive: true })

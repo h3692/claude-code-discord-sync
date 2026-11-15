@@ -130,7 +130,7 @@ export function typingRefusal(a: Typing, status: string | null, freshHash: strin
 // !type (allowWaiting) goes through here too: Codex's approvals take no free text.
 export async function typeCodex(text: string, ambiguous: boolean, io: {
   state: () => Promise<{ state: string | null; screen: string | null }>; checkPane: () => Promise<string | null>; paste: () => Promise<void>
-  enter: () => Promise<void>
+  enter: () => Promise<void>; wait: () => Promise<void>
 }): Promise<string | null> {
   if (ambiguous) return 'two Codex sessions share this folder; reply in the terminal'
   if (sanitizePaste(text).split('\n').some((l) => SHELL.test(l.replace(/^[\s\p{Cf}]+/u, '')))) {
@@ -140,16 +140,26 @@ export async function typeCodex(text: string, ambiguous: boolean, io: {
   if (first.state !== 'idle') return first.state === 'waiting' ? 'a prompt is open — use the buttons or `!keys`' : "can't confirm Codex is at its prompt"
   const pane = await io.checkPane()
   if (pane) return pane
+  // A slow redraw shows the frame from before for a while, so a read that looks unchanged is retried five times.
+  const settle = async (unchanged: (s: { state: string | null; screen: string | null }) => boolean) => {
+    let s = await io.state()
+    for (let i = 0; i < 5 && unchanged(s); i++) {
+      await io.wait()
+      s = await io.state()
+    }
+    return s
+  }
+  const before = codexComposer(first.screen ?? '')
   await io.paste()
-  // The paste itself can open a popup (`@word`, `/`), where Enter would pick an item instead of sending.
-  const pasted = await io.state()
-  if (pasted.state !== 'idle') return "pasted but not sent — Codex isn't at its prompt; check the terminal"
   // A stale frame or a composer that dropped the paste still reads idle; only a changed composer shows the text landed.
+  const pasted = await settle((s) => s.state === 'idle' && codexComposer(s.screen ?? '') === before)
+  // The paste itself can open a popup (`@word`, `/`), where Enter would pick an item instead of sending.
+  if (pasted.state !== 'idle') return "pasted but not sent — Codex isn't at its prompt; check the terminal"
   const draft = codexComposer(pasted.screen ?? '')
-  if (draft === codexComposer(first.screen ?? '')) return "pasted but not sent — Codex didn't take the text; check the terminal"
+  if (draft === before) return "pasted but not sent — Codex didn't take the text; check the terminal"
   await io.enter()
   // Codex keeps text it won't submit (an unrecognised /command) in the composer. Any other screen counts as sent.
-  const after = await io.state()
+  const after = await settle((s) => s.state === 'idle' && codexComposer(s.screen ?? '') === draft)
   if (after.state === 'idle' && codexComposer(after.screen ?? '') === draft) {
     return 'Codex kept the message in its composer instead of sending it — check the terminal'
   }
@@ -436,6 +446,7 @@ export function main({ token, guildId, userId, claudeDir, codexHome, ttl }: Sett
             await sendKeys(pane, ['Enter'])
             await new Promise((r) => setTimeout(r, 300))
           },
+          wait: () => new Promise((r) => setTimeout(r, 250)),
         }).catch((err) => err.message)
       } else {
         const { status, dialog } = await readScreen(e)
