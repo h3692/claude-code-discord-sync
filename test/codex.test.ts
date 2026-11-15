@@ -1,6 +1,15 @@
-import { describe, expect, it } from 'vitest'
-import { readFile } from 'node:fs/promises'
-import { codexScreen, parseCodexLine, readCodexMeta } from '../src/codex.ts'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  codexScreen, dateFolders, listCodexSessions, parseCodexLine, parseCodexPs, parseCwds, parsePanes, pickRollout, readCodexMeta, type CodexMeta,
+} from '../src/codex.ts'
+
+// Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
+process.env.TMUX_SOCKET_NAME = 'ccds-test-guard'
 
 const fixture = (name: string) => readFile(new URL(`./fixtures/codex/${name}`, import.meta.url), 'utf8')
 const item = (item: object, timestamp = '2026-11-15T08:00:00.000Z') =>
@@ -190,5 +199,266 @@ describe('codexScreen', () => {
       '',
     ]
     for (const s of near) expect(codexScreen(s)).toEqual({ state: 'unknown', dialog: null })
+  })
+})
+
+describe('parsePanes', () => {
+  it('maps each pane tty, without /dev/, to its pane id', () => {
+    expect(parsePanes('%0 /dev/ttys009\n%1 /dev/ttys011\n%12 /dev/pts/3\n\nbogus\n0:1 /dev/ttys004\n')).toEqual(new Map([
+      ['ttys009', '%0'], ['ttys011', '%1'], ['pts/3', '%12'],
+    ]))
+  })
+})
+
+describe('parseCodexPs', () => {
+  it('keeps codex executables that have a terminal, with lstart as printed and comm in full', () => {
+    const stdout = [
+      '17099 ttys009  Ss   Sun Nov 15 07:49:22 2026     /bin/zsh',
+      '17325 ttys009  S+   Sun Nov 15 07:49:28 2026     node',
+      '17326 ttys009  S+   Sun Nov 15 07:49:28 2026     /Users/me/.nvm/versions/node/v24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex',
+      '18016 ??       Ss   Sun Nov 15 06:00:01 2026     /Users/me/.codex/packages/app-server-daemon/releases/0.169.0-aarch64-apple-darwin/bin/codex',
+      '30719 ??       S    Sun Nov 15 06:00:02 2026     /Users/me/.codex/packages/app-server-daemon/releases/0.169.0-aarch64-apple-darwin/bin/codex-code-mode-host',
+      '43008 ttys013  T    Sun Nov  5 07:58:43 2026     /opt/homebrew/bin/codex',
+      '44179 ttys013  S    Sun Nov 15 07:59:08 2026     npm exec shadcn@latest mcp',
+      ' 4321 pts/3    Sl+  Sun Nov 15 07:59:08 2026     codex',
+      '  999 ?        Ss   Sun Nov 15 07:59:08 2026     codex',
+      ' 1000 ttys001  S    Sun Nov 15 07:59:08 2026     /Applications/My Tools/codex',
+      'garbage',
+    ].join('\n')
+    expect(parseCodexPs(stdout)).toEqual([
+      { pid: 17326, tty: 'ttys009', stat: 'S+', lstart: 'Sun Nov 15 07:49:28 2026' },
+      { pid: 43008, tty: 'ttys013', stat: 'T', lstart: 'Sun Nov  5 07:58:43 2026' },
+      { pid: 4321, tty: 'pts/3', stat: 'Sl+', lstart: 'Sun Nov 15 07:59:08 2026' },
+      { pid: 1000, tty: 'ttys001', stat: 'S', lstart: 'Sun Nov 15 07:59:08 2026' },
+    ])
+  })
+})
+
+describe('parseCwds', () => {
+  it('reads each pid\'s cwd from lsof field output', () => {
+    expect(parseCwds('p17326\nfcwd\nn/private/tmp/proj\np38536\nfcwd\nn/Users/me/my proj\n')).toEqual(new Map([
+      [17326, '/private/tmp/proj'], [38536, '/Users/me/my proj'],
+    ]))
+    expect(parseCwds('')).toEqual(new Map())
+  })
+})
+
+describe('dateFolders', () => {
+  const d = (...a: [number, number, number, number?]) => new Date(a[0], a[1] - 1, a[2], a[3] ?? 12)
+  it('runs from the day before the start through tomorrow, in local time', () => {
+    expect(dateFolders(d(2026, 11, 15, 7), d(2026, 11, 15, 19))).toEqual(['2026/11/14', '2026/11/15', '2026/11/16'])
+  })
+  it('crosses month and year ends', () => {
+    expect(dateFolders(d(2026, 10, 31, 23), d(2026, 11, 1, 0))).toEqual(['2026/10/30', '2026/10/31', '2026/11/01', '2026/11/02'])
+    expect(dateFolders(d(2026, 1, 1, 0), d(2026, 1, 1, 1))).toEqual(['2025/12/31', '2026/01/01', '2026/01/02'])
+  })
+})
+
+describe('pickRollout', () => {
+  const meta = (over: Partial<CodexMeta> = {}): CodexMeta => ({
+    id: 't1', cwd: '/w', originator: 'codex-tui', threadSource: 'user', historyMode: 'paginated', forkedFromId: null, ...over,
+  })
+  const start = 1_000_000
+
+  it('takes the newest same-folder TUI thread written since the TUI started', () => {
+    const resumed = { path: 'old', meta: meta({ id: 'old' }), mtimeMs: start + 5 }
+    const newer = { path: 'new', meta: meta({ id: 'new' }), mtimeMs: start + 9 }
+    // Resume appends to a file created days earlier; only its last write counts.
+    expect(pickRollout([resumed], '/w', start)).toBe(resumed)
+    // After /new the fresh rollout is the one being written.
+    expect(pickRollout([resumed, newer], '/w', start)).toBe(newer)
+    expect(pickRollout([{ path: 'x', meta: meta(), mtimeMs: start }], '/w', start)?.path).toBe('x')
+  })
+
+  it('ignores other folders, exec and sub-agent threads, unreadable headers and files last written before the start', () => {
+    expect(pickRollout([
+      { path: 'a', meta: meta({ cwd: '/other' }), mtimeMs: start + 1 },
+      { path: 'b', meta: meta({ originator: 'codex_exec' }), mtimeMs: start + 1 },
+      { path: 'c', meta: meta({ threadSource: 'subagent' }), mtimeMs: start + 1 },
+      { path: 'd', meta: null, mtimeMs: start + 1 },
+      { path: 'e', meta: meta(), mtimeMs: start - 1 },
+    ], '/w', start)).toBeNull()
+  })
+})
+
+describe('listCodexSessions', () => {
+  const START = 'Sun Nov 15 07:49:28 2026'
+  const startMs = Date.parse(`${START} UTC`)
+  const at = new Date(startMs)
+  const folder = `${at.getFullYear()}/${String(at.getMonth() + 1).padStart(2, '0')}/${String(at.getDate()).padStart(2, '0')}`
+  const screen = (name: string) => fixture(`screens/${name}.txt`)
+  let home = ''
+  let work = ''
+  let realWork = ''
+  let lonely = ''
+  let rollout = ''
+
+  beforeAll(async () => {
+    home = await mkdtemp(join(tmpdir(), 'ccds-codex-'))
+    work = join(home, 'work')
+    lonely = join(home, 'lonely')
+    await mkdir(work)
+    await mkdir(lonely)
+    // lsof prints the resolved path (/private/tmp on macOS) while the header keeps the path Codex was started in.
+    realWork = await realpath(work)
+    lonely = await realpath(lonely)
+    await mkdir(join(home, 'sessions', folder), { recursive: true })
+    rollout = join(home, 'sessions', folder, 'rollout-2026-11-15T02-49-50-t1.jsonl')
+    await writeFile(rollout, JSON.stringify({ type: 'session_meta', payload: { id: 't1', cwd: work, originator: 'codex-tui', thread_source: 'user', history_mode: 'paginated' } }) + '\n')
+    await utimes(rollout, new Date(startMs + 60_000), new Date(startMs + 60_000))
+  })
+
+  afterAll(() => rm(home, { recursive: true, force: true }))
+
+  type Proc = { pid: number; tty: string; cwd: string; comm?: string }
+  // Stands in for tmux, ps and lsof; screens are keyed by pane.
+  function fake(procs: Proc[], panes: Record<string, string>, screens: Record<string, string>) {
+    const calls: string[][] = []
+    const run = async (file: string, args: string[]) => {
+      calls.push([file, ...args])
+      if (file === 'tmux' && args[0] === 'list-panes') return Object.entries(panes).map(([tty, pane]) => `${pane} /dev/${tty}\n`).join('')
+      if (file === 'tmux' && args[0] === 'capture-pane') {
+        const s = screens[args.at(-1)!]
+        if (s === undefined) throw new Error("can't find pane")
+        return s
+      }
+      if (file === 'ps') return procs.map((p) => `${String(p.pid).padStart(5)} ${p.tty.padEnd(8)} S+   ${START}     ${p.comm ?? '/opt/homebrew/bin/codex'}\n`).join('')
+      if (file === 'lsof') {
+        const pids = args[args.indexOf('-p') + 1].split(',').map(Number)
+        return procs.filter((p) => pids.includes(p.pid)).map((p) => `p${p.pid}\nfcwd\nn${p.cwd}\n`).join('')
+      }
+      throw new Error(`unexpected ${file}`)
+    }
+    return { run, calls }
+  }
+  const quiet = () => {}
+
+  it('lists a pane only once its screen has shown the Codex TUI, then keeps it while the process lives', async () => {
+    const procs = [{ pid: 101, tty: 'ttys101', cwd: realWork }]
+    const panes = { ttys101: '%1' }
+    const shell = await screen('after_quit_shell')
+    expect(await listCodexSessions(home, [], quiet, fake(procs, panes, { '%1': shell }).run, 'darwin')).toEqual([])
+
+    const idle = await listCodexSessions(home, [], quiet, fake(procs, panes, { '%1': await screen('idle_empty') }).run, 'darwin')
+    expect(idle).toEqual([{
+      pid: 101, procStart: START, sessionId: 't1', cwd: realWork, name: '', status: 'idle', interactive: true, pane: '%1',
+      transcript: rollout, provider: 'codex', ambiguous: false,
+    }])
+    expect((await listCodexSessions(home, [], quiet, fake(procs, panes, { '%1': await screen('approval_command') }).run, 'darwin'))[0].status).toBe('waiting')
+    expect((await listCodexSessions(home, [], quiet, fake(procs, panes, { '%1': shell }).run, 'darwin'))[0].status).toBe('unknown')
+    // A capture that fails reads as unknown rather than failing the whole list.
+    expect((await listCodexSessions(home, [], quiet, fake(procs, panes, {}).run, 'darwin'))[0].status).toBe('unknown')
+
+    // Once the process is gone it is forgotten, so the same pid and start must be recognised again.
+    expect(await listCodexSessions(home, [], quiet, fake([], panes, {}).run, 'darwin')).toEqual([])
+    expect(await listCodexSessions(home, [], quiet, fake(procs, panes, { '%1': shell }).run, 'darwin')).toEqual([])
+  })
+
+  it('has no transcript and an empty sessionId until the first message creates the rollout', async () => {
+    const { run } = fake([{ pid: 102, tty: 'ttys102', cwd: lonely }], { ttys102: '%2' }, { '%2': await screen('idle_empty') })
+    expect(await listCodexSessions(home, [], quiet, run, 'darwin')).toMatchObject([{ pid: 102, sessionId: '', transcript: null, cwd: lonely }])
+  })
+
+  it('marks every session in a folder shared with another terminal codex as ambiguous', async () => {
+    const idle = await screen('idle_empty')
+    const procs = [
+      { pid: 103, tty: 'ttys103', cwd: realWork }, { pid: 104, tty: 'ttys104', cwd: realWork },
+      { pid: 105, tty: 'ttys105', cwd: lonely }, { pid: 106, tty: 'ttys199', cwd: lonely },
+      { pid: 107, tty: '??', cwd: realWork },
+    ]
+    const { run, calls } = fake(procs, { ttys103: '%3', ttys104: '%4', ttys105: '%5' }, { '%3': idle, '%4': idle, '%5': idle })
+    const list = await listCodexSessions(home, [], quiet, run, 'darwin')
+    expect(list.map((s) => [s.pid, s.ambiguous, s.transcript])).toEqual([[103, true, rollout], [104, true, rollout], [105, true, null]])
+    // One ps and one lsof per call, the lsof covering the codex outside tmux too.
+    expect(calls.filter((c) => c[0] === 'ps')).toHaveLength(1)
+    expect(calls.filter((c) => c[0] === 'lsof').map((c) => c[c.indexOf('-p') + 1])).toEqual(['103,104,105,106'])
+  })
+
+  it('returns the previous list and logs when a tool fails, and nothing when tmux has no server', async () => {
+    const prev = [{ pid: 1 }] as any
+    const logged: unknown[][] = []
+    const failing = async (file: string) => {
+      if (file === 'ps') throw new Error('ps: broken')
+      return '%1 /dev/ttys101\n'
+    }
+    expect(await listCodexSessions(home, prev, (...a) => logged.push(a), failing, 'darwin')).toBe(prev)
+    expect(String(logged[0])).toContain('ps: broken')
+
+    for (const msg of ['no server running on /tmp/tmux-501/default', 'error connecting to /private/tmp/tmux-501/x (No such file or directory)']) {
+      const noServer = async () => {
+        throw new Error(`Command failed: tmux list-panes\n${msg}`)
+      }
+      expect(await listCodexSessions(home, prev, (...a) => logged.push(a), noServer, 'darwin')).toEqual([])
+    }
+    expect(logged).toHaveLength(1)
+  })
+
+  it('does nothing without a sessions folder or on Windows', async () => {
+    const { run, calls } = fake([], {}, {})
+    expect(await listCodexSessions(join(home, 'nope'), [], quiet, run, 'darwin')).toEqual([])
+    expect(await listCodexSessions(home, [], quiet, run, 'win32')).toEqual([])
+    expect(calls).toEqual([])
+  })
+})
+
+const has = (cmd: string, arg: string) => {
+  try {
+    execFileSync(cmd, [arg], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// A sleep named codex stands in for the TUI, under the real tmux, ps and lsof.
+describe.skipIf(process.platform === 'win32' || !has('tmux', '-V') || !has('lsof', '-v'))('listCodexSessions on a real tmux pane', () => {
+  const socket = `ccds-test-${randomBytes(4).toString('hex')}`
+  const tmux = (...args: string[]) => execFileSync('tmux', ['-L', socket, ...args], { encoding: 'utf8' })
+  let dir = ''
+
+  beforeAll(() => {
+    process.env.TMUX_SOCKET_NAME = socket
+  })
+
+  afterAll(async () => {
+    // kill-server leaves the socket file behind.
+    try {
+      const path = tmux('display-message', '-p', '#{socket_path}').trim()
+      tmux('kill-server')
+      await rm(path, { force: true })
+    } catch {}
+    process.env.TMUX_SOCKET_NAME = 'ccds-test-guard'
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('finds the pane, its process start and cwd, and the rollout written since', async () => {
+    dir = await realpath(await mkdtemp(join(tmpdir(), 'ccds-codex-real-')))
+    const work = join(dir, 'work')
+    await mkdir(work)
+    await mkdir(join(dir, 'bin'))
+    await symlink(execFileSync('sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).trim(), join(dir, 'bin', 'codex'))
+    await writeFile(join(dir, 'screen.txt'), '\n\n› Ask Codex to do anything\n\n  model high · /w\n  ? for shortcuts')
+    // Exactly as tall as the screen, so its last row is the pane's last row.
+    tmux('-f', '/dev/null', 'new-session', '-d', '-x', '60', '-y', '6', '-c', work, `cat '${dir}/screen.txt'; exec '${dir}/bin/codex' 60`)
+    const pane = tmux('list-panes', '-F', '#{pane_id}').trim()
+    const pid = Number(tmux('display-message', '-p', '-t', pane, '#{pane_pid}').trim())
+    const home = join(dir, 'home')
+    const now = new Date()
+    const day = join(home, 'sessions', `${now.getFullYear()}`, String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0'))
+    await mkdir(day, { recursive: true })
+    const file = join(day, 'rollout-2026-11-15T02-49-50-t9.jsonl')
+    await writeFile(file, JSON.stringify({ type: 'session_meta', payload: { id: 't9', cwd: work, originator: 'codex-tui', thread_source: 'user' } }) + '\n')
+
+    let list: Awaited<ReturnType<typeof listCodexSessions>> = []
+    for (let i = 0; i < 40 && !list.length; i++) {
+      await new Promise((r) => setTimeout(r, 50))
+      list = await listCodexSessions(home, [], (...a) => console.error(...a))
+    }
+    const procStart = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).trim()
+    expect(list).toEqual([{
+      pid, procStart: expect.stringMatching(/\S/), sessionId: 't9', cwd: work, name: '', status: 'idle', interactive: true, pane,
+      transcript: file, provider: 'codex', ambiguous: false,
+    }])
+    expect(list[0].procStart.replace(/\s+/g, ' ')).toBe(procStart.replace(/\s+/g, ' '))
   })
 })

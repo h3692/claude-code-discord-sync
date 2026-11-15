@@ -7,6 +7,9 @@ import { powershell, runAsync } from './config.ts'
 export type Session = {
   pid: number; procStart: string; sessionId: string; cwd: string; name: string
   status: string; interactive: boolean; pane: string | null; transcript: string | null
+  provider: 'claude' | 'codex'
+  // Codex only: another terminal Codex shares the folder, so the rollout may be the other one's.
+  ambiguous?: boolean
 }
 
 const PANE = /^%\d+$/
@@ -149,7 +152,7 @@ export async function listSessions(sessionsDir: string, projectsDir: string, pla
     return {
       pid: e.pid, procStart: windows ? startFt(e) : e.procStart ?? '', sessionId: e.sessionId, cwd, name: (typeof e.name === 'string' && e.name) || basename(cwd),
       status: e.status ?? '', interactive: e.kind === 'interactive', pane: PANE.test(pane) ? pane : null,
-      transcript: await findTranscript(projectsDir, dirs, e.sessionId),
+      transcript: await findTranscript(projectsDir, dirs, e.sessionId), provider: 'claude',
     }
   }))
 }

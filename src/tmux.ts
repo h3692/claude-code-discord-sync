@@ -105,7 +105,7 @@ export function sanitizePaste(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
 }
 
-function tmux(...args: string[]): Promise<{ stdout: string }> {
+export function tmux(...args: string[]): Promise<{ stdout: string }> {
   const socket = process.env.TMUX_SOCKET_NAME
   return exec('tmux', socket ? ['-L', socket, ...args] : args)
 }
