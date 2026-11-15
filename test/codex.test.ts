@@ -497,7 +497,8 @@ describe('listCodexSessions', () => {
     const list = await listCodexSessions(home, [], (...a) => logged.push(a), run, 'linux')
     expect(calls.filter((c) => c[0] === 'lsof')).toEqual([])
     if (process.platform === 'linux') expect(list).toMatchObject([{ pid: process.pid, cwd: await realpath(process.cwd()) }])
-    else expect(String(logged[0])).toContain(`/proc/${process.pid}/cwd`)
+    // Off Linux the readlink fails; Windows reports the path with backslashes.
+    else expect(String(logged[0])).toMatch(new RegExp(`proc[\\\\/]${process.pid}[\\\\/]cwd`))
   })
 
   it('logs a lasting failure once, then again when it changes or after ten minutes', async () => {
