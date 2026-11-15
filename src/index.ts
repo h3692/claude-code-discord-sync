@@ -8,7 +8,7 @@ import {
 } from 'discord.js'
 import type { ButtonInteraction, CategoryChannel, Guild, TextChannel } from 'discord.js'
 import { appName, configDirFor, powershell, run } from './config.ts'
-import { codexScreen, header as rolloutHeader, listCodexSessions, parseCodexLine } from './codex.ts'
+import { codexScreen, header as rolloutHeader, listCodexSessions, parseCodexLine, seedRecognised } from './codex.ts'
 import type { CodexMeta } from './codex.ts'
 import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, SHELL, step, topicFor } from './mirror.ts'
 import type { Action, Button, Input, State } from './mirror.ts'
@@ -579,6 +579,13 @@ export function main({ token, guildId, userId, claudeDir, codexHome, ttl }: Sett
     const found = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name === CATEGORY.codex) as CategoryChannel | undefined
     if (found) codexCat = Promise.resolve(found)
     const live = [claudeCat.id, found?.id]
+    // Discovery only lists a TUI once its screen is recognised; a live channel says it already was.
+    const keys: string[] = []
+    for (const c of found?.children.cache.values() ?? []) {
+      const t = parseTopic(c.type === ChannelType.GuildText ? c.topic : null)
+      if (t && t.endedAt === null) keys.push(`${t.pid}|${t.procStart}`)
+    }
+    seedRecognised(keys)
     const sessions = await listAll()
     for (const c of guild.channels.cache.values()) {
       if (!live.includes(c.parentId ?? '') || c.type !== ChannelType.GuildText) continue

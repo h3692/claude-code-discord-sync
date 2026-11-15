@@ -5,7 +5,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } fr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  codexScreen, dateFolders, listCodexSessions, parseCodexLine, parseCodexPs, parseCwds, parsePanes, pickRollout, readCodexMeta, type CodexMeta,
+  codexScreen, dateFolders, listCodexSessions, parseCodexLine, parseCodexPs, parseCwds, parsePanes, pickRollout, readCodexMeta, seedRecognised,
+  type CodexMeta,
 } from '../src/codex.ts'
 
 // Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
@@ -356,6 +357,16 @@ describe('listCodexSessions', () => {
     // Once the process is gone it is forgotten, so the same pid and start must be recognised again.
     expect(await listCodexSessions(home, [], quiet, fake([], panes, {}).run, 'darwin')).toEqual([])
     expect(await listCodexSessions(home, [], quiet, fake(procs, panes, { '%1': shell }).run, 'darwin')).toEqual([])
+  })
+
+  it('lists a seeded TUI on any screen, after a watcher restart, but only while that process lives', async () => {
+    const procs = [{ pid: 112, tty: 'ttys112', cwd: realWork }]
+    const shell = { '%12': await screen('after_quit_shell') }
+    seedRecognised([`112|${START}`, `113|${START}`])
+    expect(await listCodexSessions(home, [], quiet, fake(procs, { ttys112: '%12' }, shell).run, 'darwin')).toMatchObject([{ pid: 112, status: 'unknown' }])
+    // 113 wasn't running at that first list, so its seed is gone.
+    const later = [{ pid: 113, tty: 'ttys113', cwd: realWork }]
+    expect(await listCodexSessions(home, [], quiet, fake(later, { ttys113: '%13' }, { '%13': shell['%12'] }).run, 'darwin')).toEqual([])
   })
 
   it('has no transcript and an empty sessionId until the first message creates the rollout', async () => {

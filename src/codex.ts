@@ -260,6 +260,12 @@ async function findRollout(sessionsDir: string, cwd: string, start: number): Pro
 // so `codex exec` or anything else named codex in a pane never gets a channel.
 const recognised = new Set<string>()
 
+// A restarted watcher seeds the keys of its live Codex channels, so a TUI not on a recognisable screen right then
+// keeps its channel. A seed only counts while it matches a running codex in a pane; the next list drops the rest.
+export function seedRecognised(keys: string[]): void {
+  for (const k of keys) recognised.add(k)
+}
+
 // The last discovery failure logged: a lasting one is logged once, then again when it changes or every ten minutes.
 let lastFailure = { message: '', at: 0 }
 
