@@ -27,7 +27,7 @@ describe('serviceFor darwin', () => {
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
-		<string>/opt/homebrew/Cellar/node/24.12.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<string>/opt/homebrew/Cellar/node/24.12.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>
@@ -67,7 +67,7 @@ describe('serviceFor darwin', () => {
   it('passes CCDS_NAME, CLAUDE_DIR and XDG_CONFIG_HOME through only when set', () => {
     const text = serviceFor('darwin', { ...mac, name: 'ccds-test', env: isolated }).file!.text
     expect(text).toContain(`		<key>PATH</key>
-		<string>/opt/homebrew/Cellar/node/24.12.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<string>/opt/homebrew/Cellar/node/24.12.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<key>CCDS_NAME</key>
 		<string>ccds-test</string>
 		<key>CLAUDE_DIR</key>
@@ -97,7 +97,7 @@ Description=claude-code-discord-sync
 
 [Service]
 ExecStart="/usr/bin/node" "/usr/lib/node_modules/claude-code-discord-sync/dist/cli.js" start
-Environment="PATH=/usr/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=/usr/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 Restart=on-failure
 RestartSec=30
 
@@ -110,7 +110,7 @@ WantedBy=default.target
     const s = serviceFor('linux', { ...linux, name: 'ccds-test', env: isolated })
     expect(s.file?.path).toBe('/tmp/x/svc-live/systemd/user/ccds-test.service')
     expect(s.file?.text).toContain(`start
-Environment="PATH=/usr/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=/usr/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 Environment="CCDS_NAME=ccds-test"
 Environment="CLAUDE_DIR=/tmp/x/claude-empty"
 Environment="XDG_CONFIG_HOME=/tmp/x/svc-live"

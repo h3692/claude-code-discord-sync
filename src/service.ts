@@ -52,7 +52,8 @@ export function serviceFor(platform: string, { name, node, cli, home, uid, env, 
   if (platform === 'darwin') {
     const path = posix.join(home, 'Library', 'LaunchAgents', `${name}.plist`)
     const log = posix.join(home, 'Library', 'Logs', `${name}.log`)
-    const vars = [['PATH', `${posix.dirname(node)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`], ...passed]
+    // /usr/sbin holds lsof, which Codex discovery needs on macOS.
+    const vars = [['PATH', `${posix.dirname(node)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`], ...passed]
     const text = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -118,7 +119,7 @@ Description=${name}
 
 [Service]
 ExecStart=${program.map((a) => systemdQuote(a, true)).join(' ')} start
-${[['PATH', `${posix.dirname(node)}:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin`], ...passed].map(([k, v]) => `Environment=${systemdQuote(`${k}=${v}`)}\n`).join('')}Restart=on-failure
+${[['PATH', `${posix.dirname(node)}:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`], ...passed].map(([k, v]) => `Environment=${systemdQuote(`${k}=${v}`)}\n`).join('')}Restart=on-failure
 RestartSec=30
 
 [Install]
