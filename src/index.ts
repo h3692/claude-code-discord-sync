@@ -149,9 +149,11 @@ export async function typeCodex(text: string, ambiguous: boolean, io: {
 const UNRECORDED = "-# 📭 This Codex thread doesn't record its output; only approvals and typing work here."
 const SHARED = '-# ⚠️ Another Codex session is open in this folder, so what shows here may be from either one. Typing is refused; approvals still work.'
 
-// Where a newly matched rollout is read from: a fork starts with its parent's history, so only from its end.
-export function codexStart(meta: CodexMeta | null, offset: number, size: number): { offset: number; notice: string | null } {
-  return { offset: meta?.forkedFromId ? size : offset, notice: meta && meta.historyMode !== 'paginated' ? UNRECORDED : null }
+// Where a newly matched rollout is read from. Seen after startup: from its start, whatever its age, since a resumed
+// thread matches only after its first new write and freshEvents drops its history. A fork starts with its parent's
+// history, so only from its end.
+export function codexStart(meta: CodexMeta | null, from: 'eof' | 'birth', size: number): { offset: number; notice: string | null } {
+  return { offset: from === 'eof' || meta?.forkedFromId ? size : 0, notice: meta && meta.historyMode !== 'paginated' ? UNRECORDED : null }
 }
 
 export const CATEGORY = { claude: 'Claude Sessions', codex: 'Codex Sessions' } as const
@@ -519,7 +521,7 @@ export function main({ token, guildId, userId, claudeDir, codexHome, ttl }: Sett
         e.transcript = s.transcript
         e.offset = !st ? 0 : e.from === 'eof' ? st.size : startOffset(st.birthtimeMs, st.size, now)
         if (s.provider === 'codex') {
-          const { offset, notice } = codexStart(await rolloutHeader(s.transcript), e.offset, st?.size ?? 0)
+          const { offset, notice } = codexStart(await rolloutHeader(s.transcript), e.from, st?.size ?? 0)
           e.offset = offset
           if (notice) apply(e, { kind: 'notice', text: notice })
         }

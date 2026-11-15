@@ -387,17 +387,34 @@ describe('typeCodex', () => {
 describe('codexStart', () => {
   const meta = { id: 't', cwd: '/p', originator: 'codex-tui', threadSource: 'user', historyMode: 'paginated', forkedFromId: null }
 
-  it('keeps the offset for an ordinary thread, or an unreadable header', () => {
-    expect(codexStart(meta, 0, 900)).toEqual({ offset: 0, notice: null })
-    expect(codexStart(null, 0, 900)).toEqual({ offset: 0, notice: null })
+  it('reads a thread first seen after startup from its start, whatever its age, or an unreadable header', () => {
+    expect(codexStart(meta, 'birth', 900)).toEqual({ offset: 0, notice: null })
+    expect(codexStart(null, 'birth', 900)).toEqual({ offset: 0, notice: null })
+  })
+
+  it('reads a thread already running at startup from its end', () => {
+    expect(codexStart(meta, 'eof', 900)).toEqual({ offset: 900, notice: null })
   })
 
   it('starts a forked thread at its end, so the history it copied is not replayed', () => {
-    expect(codexStart({ ...meta, forkedFromId: 'parent' }, 0, 900)).toEqual({ offset: 900, notice: null })
+    expect(codexStart({ ...meta, forkedFromId: 'parent' }, 'birth', 900)).toEqual({ offset: 900, notice: null })
+  })
+
+  // A resumed thread matches only after its first new write, which brings task_started and the prompt together.
+  it('keeps the first prompt of a resumed thread and drops its history', () => {
+    const rollout = readFileSync(new URL('./fixtures/codex/rollout.jsonl', import.meta.url), 'utf8')
+    const { offset } = codexStart(meta, 'birth', Buffer.byteLength(rollout))
+    // Resumed a few seconds before the second turn's task_started (07:53:24.598), prompt 0.17 s later.
+    const seenAt = Date.parse('2026-11-15T07:53:20Z')
+    const events = freshEvents(rollout.slice(offset).split('\n'), seenAt, parseCodexLine)
+    expect(events.slice(0, 2)).toEqual([
+      { kind: 'prompt', text: 'Line one of the probe.\nLine two of the probe.\nReply with exactly: ok' },
+      { kind: 'text', text: 'ok' },
+    ])
   })
 
   it('says when a thread records no output', () => {
-    expect(codexStart({ ...meta, historyMode: 'legacy' }, 0, 900)).toEqual({
+    expect(codexStart({ ...meta, historyMode: 'legacy' }, 'birth', 900)).toEqual({
       offset: 0, notice: "-# 📭 This Codex thread doesn't record its output; only approvals and typing work here.",
     })
   })
