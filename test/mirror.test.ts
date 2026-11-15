@@ -165,6 +165,12 @@ describe('step: turn end', () => {
     expect(b.state.agents[0].state).toBe('running')
     expect(b.actions).toEqual([expect.objectContaining({ type: 'send', content: renderDone(1000, 1, 'u1'), ping: true })])
   })
+  it('caps the pending count at the agents it still sees running, since Claude Code\'s count can lag', () => {
+    const a = events(start().state, agent('a1'), agent('a2'))
+    const b = events(a.state, { kind: 'agent_end', id: 'a1', status: 'completed' }, { kind: 'agent_end', id: 'a2', status: 'completed' })
+    const c = events(b.state, { kind: 'turn_end', durationMs: 1000, pendingAgents: 2 })
+    expect(c.actions).toEqual([expect.objectContaining({ type: 'send', content: renderDone(1000, 0, 'u1'), ping: true })])
+  })
 })
 
 describe('step: title', () => {

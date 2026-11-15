@@ -52,6 +52,13 @@ describe('parseLine', () => {
     const blocks = { type: 'attachment', attachment: { type: 'queued_command', commandMode: 'prompt', origin: { kind: 'human' }, prompt: [{ type: 'text', text: 'queued' }] } }
     expect(parseLine(JSON.stringify(blocks))).toEqual([{ kind: 'prompt', text: 'queued' }])
   })
+
+  it('takes an agent\'s end from the queue log, which is written before the turn that reports it ends', () => {
+    const enqueue = { type: 'queue-operation', operation: 'enqueue', content: '<task-notification>\n<tool-use-id>toolu_y</tool-use-id>\n<status>completed</status>\n</task-notification>' }
+    expect(parseLine(JSON.stringify(enqueue))).toEqual([{ kind: 'agent_end', id: 'toolu_y', status: 'completed' }])
+    expect(parseLine(JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: 'a typed prompt' }))).toEqual([])
+    expect(parseLine(JSON.stringify({ ...enqueue, operation: 'dequeue' }))).toEqual([])
+  })
 })
 
 describe('readAppended', () => {

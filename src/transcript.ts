@@ -29,6 +29,9 @@ export function parseLine(line: string, since?: number): TranscriptEvent[] {
         if (entry.subtype !== 'turn_duration') return []
         return [{ kind: 'turn_end', durationMs: entry.durationMs ?? 0, pendingAgents: entry.pendingBackgroundAgentCount ?? 0 }]
       case 'ai-title': return [{ kind: 'title', title: entry.aiTitle }]
+      // An agent's completion is logged here first; the turn that reports it can end before the user line appears.
+      case 'queue-operation':
+        return entry.operation === 'enqueue' && entry.content.includes('<task-notification>') ? parseNotification(entry.content) : []
       default: return []
     }
   } catch {

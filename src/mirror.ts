@@ -179,15 +179,19 @@ export function step(state: State, input: Input): { state: State; actions: Actio
               setAgent(e.id, e.durationMs === undefined ? { state: e.status } : { state: e.status, durationMs: e.durationMs })
             }
             break
-          case 'turn_end':
+          case 'turn_end': {
             // Some completions carry no id, so with nothing pending every running agent is done.
             if (e.pendingAgents === 0) {
               s.agents = s.agents.map((a): Agent => (a.state === 'running' ? { ...a, state: 'completed' } : a))
               editPanel()
             }
             closeStretch()
-            actions.push({ type: 'send', ref: ref(), content: renderDone(e.durationMs, e.pendingAgents, s.userId), ping: true })
+            // Claude Code's count can lag finished agents; agents started before we attached are only known to it.
+            const running = s.agents.filter((a) => a.state === 'running').length
+            const pending = s.agentIds.length ? Math.min(e.pendingAgents, running) : e.pendingAgents
+            actions.push({ type: 'send', ref: ref(), content: renderDone(e.durationMs, pending, s.userId), ping: true })
             break
+          }
           case 'title': {
             if (s.titled) break
             s.titled = true

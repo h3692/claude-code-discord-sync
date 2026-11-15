@@ -7,7 +7,7 @@ export type Dialog = { question: string; options: { n: number; label: string }[]
 
 const OPTION = /^\s*(❯\s+)?(\d+)\.\s+(.+)$/
 const SEPARATOR = /^[\s─╌▔]+$/
-const BORDER = /^ *─{10,} *$/
+export const BORDER = /^ *─{10,} *$/
 const CHECKBOX = /^\[[ ✔xX✓]\]/
 const PANE = /^%\d+$/
 const KEYS: Record<string, string> = {

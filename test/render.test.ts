@@ -175,6 +175,11 @@ describe('renderCard', () => {
     expect(renderCard('Allow?\n1. Yes\n2. No')).toEqual({ title: '🟡 Claude needs you', description: '```\nAllow?\n1. Yes\n2. No\n```' })
   })
 
+  it('starts at the prompt\'s top border, dropping the chat above it and trailing spaces', () => {
+    const screen = `⏺ earlier reply\n${'─'.repeat(40)}\n Which color?   \n❯ 1. Red\n  2. Green\n`
+    expect(renderCard(screen).description).toBe('```\n Which color?\n❯ 1. Red\n  2. Green\n```')
+  })
+
   it('keeps the bottom of a tall screen within 4096', () => {
     const screen = Array.from({ length: 500 }, (_, i) => `row ${i} ${'.'.repeat(20)}`).join('\n') + '\n❯ 1. Yes\n  2. No'
     const { description } = renderCard(screen)

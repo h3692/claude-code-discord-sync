@@ -1,3 +1,5 @@
+import { BORDER } from './tmux.ts'
+
 export type ToolState = 'running' | 'ok' | 'error'
 export type Tool = { id: string; name: string; input: Record<string, unknown>; state: ToolState }
 export type AgentState = 'running' | 'completed' | 'failed' | 'stopped'
@@ -93,10 +95,13 @@ export function renderDone(durationMs: number, pendingAgents: number, userId: st
 }
 
 export function renderCard(screen: string): { title: string; description: string } {
-  let body = screen
+  // Start below the prompt's top border, the same region its hash covers, so earlier chat stays out.
+  const lines = screen.replace(/\n$/, '').split('\n').map((l) => l.trimEnd())
+  const top = lines.findIndex((l) => BORDER.test(l))
+  let body = lines.slice(top + 1).join('\n')
   if (`\`\`\`\n${body}\n\`\`\``.length > EMBED_MAX) {
     // Keep the bottom, where the options are, starting at a whole line.
-    const tail = screen.slice(-(EMBED_MAX - '```\n…\n\n```'.length))
+    const tail = body.slice(-(EMBED_MAX - '```\n…\n\n```'.length))
     const nl = tail.indexOf('\n')
     body = `…\n${nl === -1 ? tail : tail.slice(nl + 1)}`
   }
