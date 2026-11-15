@@ -436,10 +436,11 @@ describe.skipIf(process.platform === 'win32' || !has('tmux', '-V') || !has('lsof
     const work = join(dir, 'work')
     await mkdir(work)
     await mkdir(join(dir, 'bin'))
-    await symlink(execFileSync('sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).trim(), join(dir, 'bin', 'codex'))
+    // node, not sleep: newer Ubuntu's sleep is a multi-call binary that exits when invoked as `codex`.
+    await symlink(process.execPath, join(dir, 'bin', 'codex'))
     await writeFile(join(dir, 'screen.txt'), '\n\n› Ask Codex to do anything\n\n  model high · /w\n  ? for shortcuts')
     // Exactly as tall as the screen, so its last row is the pane's last row.
-    tmux('-f', '/dev/null', 'new-session', '-d', '-x', '60', '-y', '6', '-c', work, `cat '${dir}/screen.txt'; exec '${dir}/bin/codex' 60`)
+    tmux('-f', '/dev/null', 'new-session', '-d', '-x', '60', '-y', '6', '-c', work, `cat '${dir}/screen.txt'; exec '${dir}/bin/codex' -e 'setTimeout(() => {}, 60000)'`)
     const pane = tmux('list-panes', '-F', '#{pane_id}').trim()
     const pid = Number(tmux('display-message', '-p', '-t', pane, '#{pane_pid}').trim())
     const home = join(dir, 'home')
