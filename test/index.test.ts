@@ -116,6 +116,11 @@ describe('lockDirFor', () => {
     const appData = 'C:\\Users\\me\\AppData\\Roaming'
     expect(lockDirFor('win32', { APPDATA: appData }, 'C:\\Users\\me')).toBe(join(appData, 'claude-code-discord-sync'))
   })
+
+  it('names the Linux and Windows lock folder after CCDS_NAME', () => {
+    expect(lockDirFor('linux', { CCDS_NAME: 'ccds-test' }, '/home/me')).toBe(join('/home/me', '.config', 'ccds-test'))
+    expect(lockDirFor('win32', { CCDS_NAME: 'ccds-test', APPDATA: 'C:\\a' }, 'C:\\Users\\me')).toBe(join('C:\\a', 'ccds-test'))
+  })
 })
 
 describe('Outbox', () => {

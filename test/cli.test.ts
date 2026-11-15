@@ -1,9 +1,17 @@
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url))
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DISCORD_')))
+// A throwaway name and folders, so start never finds the real config or the real Keychain item.
+const scratch = mkdtempSync(join(tmpdir(), 'ccds-cli-'))
+const env = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DISCORD_'))),
+  CCDS_NAME: `ccds-test-${process.pid}`, XDG_CONFIG_HOME: scratch, APPDATA: scratch, LOCALAPPDATA: scratch,
+}
 const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', env })
 
 describe('cli', () => {
@@ -22,9 +30,17 @@ describe('cli', () => {
     expect(r.stderr).toContain('Usage: claude-code-discord-sync')
   })
 
-  it('refuses to start without the required environment variables', () => {
+  it('tells the user to run setup when nothing is configured', () => {
     const r = run('start')
     expect(r.status).toBe(1)
-    expect(r.stderr).toContain('Missing required environment variable DISCORD_BOT_TOKEN')
+    expect(r.stderr).toContain('claude-code-discord-sync setup')
+  })
+
+  it('still asks for setup when the config has ids but no token is stored', () => {
+    mkdirSync(join(scratch, env.CCDS_NAME), { recursive: true })
+    writeFileSync(join(scratch, env.CCDS_NAME, 'config.json'), JSON.stringify({ guildId: '111', userId: '222' }))
+    const r = run('start')
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('claude-code-discord-sync setup')
   })
 })

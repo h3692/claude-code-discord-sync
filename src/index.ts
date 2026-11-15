@@ -7,6 +7,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Client, EmbedBuilder, Events, GatewayIntentBits, Message, MessageFlags,
 } from 'discord.js'
 import type { ButtonInteraction, CategoryChannel, Guild, TextChannel } from 'discord.js'
+import { appName, configDirFor } from './config.ts'
 import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor } from './mirror.ts'
 import type { Action, Button, Input, State } from './mirror.ts'
 import { renderEnded } from './render.ts'
@@ -44,8 +45,7 @@ function isWatcher(pid: number): boolean {
 
 export function lockDirFor(platform: string, env: Record<string, string | undefined>, home: string): string {
   if (platform === 'darwin') return join(home, 'Library', 'Caches')
-  if (platform === 'win32') return join(env.APPDATA || join(home, 'AppData', 'Roaming'), 'claude-code-discord-sync')
-  return join(env.XDG_CONFIG_HOME || join(home, '.config'), 'claude-code-discord-sync')
+  return configDirFor(platform, env, home)
 }
 
 // shortcut: two watchers starting in the same instant over a stale lock can both win; fine for a LaunchAgent.
@@ -191,7 +191,7 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
 
   const lockDir = lockDirFor(process.platform, process.env, homedir())
   mkdirSync(lockDir, { recursive: true })
-  const lockPath = join(lockDir, 'claude-code-discord-sync.lock')
+  const lockPath = join(lockDir, `${appName(process.env)}.lock`)
   if (!acquireLock(lockPath)) {
     console.error(`Another instance is running (lock ${lockPath})`)
     process.exit(1)
