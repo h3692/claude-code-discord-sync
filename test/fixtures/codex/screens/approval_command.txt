@@ -1,0 +1,45 @@
+› Line one of the probe. Line two of the probe. Reply with exactly: ok
+• Hook failed                                                  
+  └ plugin contents changed; hook approval required                                                        
+                                                                                                                                            
+• ok                                                    
+                                                                                                                                            
+  Worked for 2s • 2:53 AM                                                                                                                   
+                                                               
+                                                                                                                                            
+› Reply with exactly the word done, ignore this @math         
+                                                                                                                                            
+                                                   
+• Hook failed                                                  
+  └ plugin contents changed; hook approval required                                                                                         
+                                                                                                                                            
+• done                                                                          
+                                                                                                                                            
+  Worked for 2s • 2:54 AM                                                                                                                   
+                                                                                                                                            
+                                                                                                                                            
+› Run exactly this shell command once, requesting approval/escalation if needed: touch probe1.txt
+                                                                                                                                            
+                                                                                      
+• Hook failed                                                                                                                               
+  └ plugin contents changed; hook approval required                                   
+                                                                                                                                            
+• I’ll run the requested command once and request the required filesystem approval.                                                         
+                                                                                                                                            
+• Running touch probe1.txt                                                      
+                                                                                                                                            
+                                                                                                                                            
+  Would you like to run the following command?                                                                                              
+                                                                                                                                            
+  Environment: local                                                                                                                        
+                                                                                                                                            
+  Reason: May I create probe1.txt in the project directory by running the requested touch command once?                                     
+                                                                                                                                            
+  $ touch probe1.txt                                                                                                                        
+                                                                                                                                            
+                                                                                                                                            
+› 1. Yes, proceed (y)                                                                                                                       
+  2. Yes, and don't ask again for commands that start with `touch probe1.txt` (p)                
+  3. No, and tell Codex what to do differently (esc)      
+                                                                                                                                            
+  Press enter to confirm or esc to cancel                                                                                                   

@@ -1,0 +1,45 @@
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.162.1 -> 0.169.0         │
+│ Run npm install -g @openai/codex to update.     │                                                        
+│                                                 │      
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯                                                                                         
+                           
+                                                
+  >_ OpenAI Codex (v0.162.1)
+     /tmp/project                                 
+
+  To get started, describe a task or try one of these commands:
+
+  /init - create an AGENTS.md file with instructions for Codex         
+  /status - show current session configuration                                  
+  /permissions - choose what Codex is allowed to do                               
+  /model - choose what model and reasoning effort to use                           
+  /review - review any changes and find issues                                      
+                                                                                    
+                                                                                     
+› Reply with exactly the word: pong                                                   
+                                                                                      
+                                                                                       
+• Hook failed                                                                         
+  └ plugin contents changed; hook approval required                                   
+                                                                                     
+• Hook failed                                                                      
+  └ plugin contents changed; hook approval required                             
+                                                                               
+• pong                                                                                                                                      
+                                                                                                                                            
+  Worked for 2s • 2:51 AM                                                                                                                   
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                               
+› Line one of the probe.                                                                                                                    
+  Line two of the probe.                                    
+  Reply with exactly: ok                                                 
+                                                          
+  GPT-6-Luna high · /tmp/project · Reply with pong
+                                                                                                                   ⚠ 1 warning · f2 to view 

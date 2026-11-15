@@ -1,0 +1,45 @@
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.162.1 -> 0.169.0         │
+│ Run npm install -g @openai/codex to update.     │                                                        
+│                                                 │      
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯                                                                                         
+                           
+                                                
+  >_ OpenAI Codex (v0.162.1)
+     /tmp/project                                 
+
+  To get started, describe a task or try one of these commands:
+
+  /init - create an AGENTS.md file with instructions for Codex         
+  /status - show current session configuration                                  
+  /permissions - choose what Codex is allowed to do                               
+  /model - choose what model and reasoning effort to use                           
+  /review - review any changes and find issues                                      
+                                                                                    
+                                                                                     
+                                                                                      
+                                                                                      
+                                                                                       
+                                                                                      
+                                                                                      
+                                                                                     
+                                                                                   
+                                                                                
+                                                                               
+› Analytics Dashboard           [Skill] Create spreadsheets with the Analytics Dashboard template                                           
+  Business Review               [Skill] Create presentations with the Business Review template                                              
+  ChatGPT Space                 [App] Read, search, create, and edit pages and spaces in ChatGPT Space, within your current account.        
+  Codex Document Control        [App] Discover and control connected document sessions from Codex.                                          
+  Create pet                    [Skill] Create and preview a new ChatGPT Work mode pet                                                      
+  Design Report                 [Skill] Create documents with the Design Report template                                                    
+  Experiment Analysis           [Skill] Create documents with the Experiment Analysis template                                              
+  Financial Budget              [Skill] Create spreadsheets with the Financial Budget template                                              
+↓                                                              
+  enter insert · esc close                                                                                                                  
+                                                            
+› $                                                                      
+                                                          
+  GPT-6-Luna high · /tmp/project   
+                                                                                                                                            
