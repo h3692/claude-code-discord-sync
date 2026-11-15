@@ -225,7 +225,7 @@ Setup covers everything most people need. These environment variables change the
 The login service gets only `CCDS_NAME`, `CLAUDE_DIR` and `XDG_CONFIG_HOME` from the environment setup ran in; the
 other variables apply when you run `claude-code-discord-sync start` yourself. On Windows, the watcher started at
 login sees only your persistent user variables, so set `CCDS_WINDOWS_TYPING` with `setx CCDS_WINDOWS_TYPING 1`,
-then sign out and back in (or run `claude-code-discord-sync start` by hand from a new terminal).
+then sign out and back in (or re-run `claude-code-discord-sync setup` from a new terminal, which restarts the watcher).
 
 ## FAQ
 
