@@ -83,6 +83,17 @@ describe('dpapi commands', () => {
     expect(enc.args.join(' ')).not.toContain('-AsPlainText -Force | ConvertFrom-SecureString -AsPlainText')
     expect(enc.input).toBe(fake)
 
+    // Launched from PowerShell 7, Windows PowerShell 5.1 inherits 7's module path and fails to load its cmdlets.
+    const saved = process.env.PSModulePath
+    process.env.PSModulePath = 'C:\\Program Files\\PowerShell\\7\\Modules'
+    try {
+      expect(dpapiEncrypt(fake).env).not.toHaveProperty('PSModulePath')
+    } finally {
+      if (saved === undefined) delete process.env.PSModulePath
+      else process.env.PSModulePath = saved
+    }
+    expect(enc.args.join(' ')).not.toMatch(/SecureString/)
+
     const dec = dpapiDecrypt('01000000d08c')
     expect(dec.args.join(' ')).not.toContain('01000000d08c')
     expect(dec.input).toBe('01000000d08c')

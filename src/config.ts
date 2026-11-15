@@ -9,7 +9,7 @@ import { Writable } from 'node:stream'
 type Env = Record<string, string | undefined>
 export type Config = { guildId?: string; userId?: string }
 // The token travels only in `input` (stdin), never in args.
-export type Command = { file: string; args: string[]; input?: string }
+export type Command = { file: string; args: string[]; input?: string; env?: NodeJS.ProcessEnv }
 
 export const appName = (env: Env): string => env.CCDS_NAME || 'claude-code-discord-sync'
 
@@ -47,13 +47,19 @@ export const keychainRead = (name: string): Command => ({ file: 'security', args
 export const keychainDelete = (name: string): Command => ({ file: 'security', args: ['delete-generic-password', '-s', name] })
 
 // ConvertFrom-SecureString without -AsPlainText (PowerShell 7 only) gives the DPAPI blob for this user.
-const powershell = (script: string, input: string): Command => ({ file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', script], input })
-export const dpapiEncrypt = (token: string): Command =>
-  powershell('ConvertTo-SecureString ([Console]::In.ReadToEnd()) -AsPlainText -Force | ConvertFrom-SecureString', token)
-export const dpapiDecrypt = (blob: string): Command =>
-  powershell("[Net.NetworkCredential]::new('', (ConvertTo-SecureString ([Console]::In.ReadToEnd().Trim()))).Password", blob)
+// Started from PowerShell 7, Windows PowerShell 5.1 inherits 7's PSModulePath and can't load its own cmdlets, so drop it.
+export function powershell(script: string, input?: string): Command {
+  const { PSModulePath: _, ...env } = process.env
+  return { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', script], input, env }
+}
+// DPAPI through .NET directly, so no PowerShell module has to load.
+const DPAPI = "[void][Reflection.Assembly]::LoadWithPartialName('System.Security'); "
+export const dpapiEncrypt = (token: string): Command => powershell(DPAPI +
+  "[Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes([Console]::In.ReadToEnd()), $null, 'CurrentUser'))", token)
+export const dpapiDecrypt = (blob: string): Command => powershell(DPAPI +
+  "[Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()), $null, 'CurrentUser'))", blob)
 
-const run = ({ file, args, input }: Command): string => execFileSync(file, args, { input, encoding: 'utf8', stdio: 'pipe', windowsHide: true })
+const run = ({ file, args, input, env }: Command): string => execFileSync(file, args, { input, env, encoding: 'utf8', stdio: 'pipe', windowsHide: true })
 
 const tokenFileFor = (platform: string, env: Env, home: string): string =>
   platform === 'win32'
