@@ -1,0 +1,38 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+ ▝▝   ▝▝   /tmp/project
+
+
+❯ Use the AskUserQuestion tool exactly once to ask me ONE single-choice question: "Pick a color" with header "Color"    
+  and options "Red" (desc "warm") and "Blue" (desc "cool"). Do nothing else.                                            
+
+⏺ User answered Claude's questions:
+  ⎿  · Pick a color → Blue
+
+⏺ You picked Blue.
+
+✻ Cogitated for 1s · done 3:28 PM
+         
+❯ Use the AskUserQuestion tool exactly once with multiSelect true: question "Pick toppings" header "Toppings" options   
+  "Cheese","Olives","Basil". Do nothing else.                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Toppings  ✔ Submit  →
+
+Pick toppings
+
+❯ 1. [ ] Cheese
+         Classic mozzarella topping
+  2. [ ] Olives
+         Sliced black or green olives
+  3. [ ] Basil
+         Fresh basil leaves
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this                                                                              
+
+Enter to select · ↑/↓ to navigate · Esc to cancel                                                                       
+
+
+                                                                                                          
+                                 
