@@ -208,6 +208,8 @@ describe('setup (non-TTY)', () => {
     await setup(h.io)
     expect(h.saved).toEqual([])
     expect(h.config().userId).toBe(OWNER)
+    // Without a terminal the read blocks until stdin closes, so say what it is waiting for.
+    expect(h.lines).toContain('Reading the bot token from stdin (empty keeps the stored one)...')
   })
 
   it('replaces a stored token that still works with one piped on stdin', async () => {

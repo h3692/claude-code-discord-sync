@@ -164,6 +164,7 @@ export async function setup(over: Partial<Io> = {}): Promise<void> {
 
   // 2. Existing token. Discord shows a token once, so a working one is never replaced unasked.
   // Without a terminal stdin is read first: a token piped there is the ask, and replaces the stored one.
+  if (!io.tty) io.log('Reading the bot token from stdin (empty keeps the stored one)...')
   const piped = io.tty ? '' : await io.askHidden('Paste the bot token (hidden): ')
   token = piped ? '' : io.readToken() ?? ''
   let bot = token ? await me() : null

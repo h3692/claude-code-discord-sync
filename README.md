@@ -54,7 +54,8 @@ Requirements:
 - Claude Code
 
 Upgrading this tool with Homebrew or npm doesn't need setup again: the login service runs the installed
-`claude-code-discord-sync` command, whose path stays the same. Switching Node versions with nvm does. A global npm
+`claude-code-discord-sync` command, whose path stays the same. The new version starts at your next login, or re-run
+setup to restart it now. Switching Node versions with nvm does. A global npm
 install belongs to the Node version that was active when you installed it, and the login service runs that copy.
 After switching versions, install again and re-run `claude-code-discord-sync setup`.
 `claude-code-discord-sync status` tells you if the Node the service runs has gone missing.
