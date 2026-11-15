@@ -157,7 +157,9 @@ const PS_LINE = /^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d
 // when the server never started; any other connect error (permissions, a stale non-socket) is a failure.
 const NO_SERVER = /no server running|error connecting to .*\(No such file or directory\)/
 
-export type Rollout = { path: string; meta: CodexMeta | null; mtimeMs: number }
+export type Rollout = { path: string; meta: CodexMeta | null; mtimeMs: number; birthtimeMs?: number }
+// A TUI found gone: its folder, start and when it was last seen (epoch ms).
+export type Exited = { cwd: string; start: number; end: number }
 type Run = (file: string, args: string[]) => Promise<string>
 
 // tmux through its wrapper, so TMUX_SOCKET_NAME holds; ps and lsof in the C locale and UTC, the form checkPane compares.
@@ -208,10 +210,13 @@ export function dateFolders(start: Date, now: Date): string[] {
 
 // The daemon, not the TUI, holds the rollout open, so the match is by folder and time: the newest user thread
 // last written since the TUI started. A resumed thread appends to an older file, so creation time doesn't count.
-export function pickRollout(rollouts: Rollout[], cwd: string, start: number): Rollout | null {
+// A thread made while a same-folder TUI that has since exited ran, and not written since, was likely that TUI's:
+// skipping it keeps the survivor from flipping to it. With nothing left, the caller keeps the transcript it had.
+export function pickRollout(rollouts: Rollout[], cwd: string, start: number, exited: Exited[] = []): Rollout | null {
   let best: Rollout | null = null
   for (const r of rollouts) {
     if (r.meta?.originator !== 'codex-tui' || r.meta.threadSource !== 'user' || r.meta.cwd !== cwd || r.mtimeMs < start) continue
+    if (exited.some((x) => x.cwd === cwd && (r.birthtimeMs ?? 0) >= x.start && r.mtimeMs <= x.end)) continue
     if (!best || r.mtimeMs > best.mtimeMs) best = r
   }
   return best
@@ -248,7 +253,7 @@ async function readRollouts(sessionsDir: string, files: string[], cwd: string, s
     const st = await stat(path).catch(() => null)
     if (!st || st.mtimeMs < start) continue
     const meta = await header(path)
-    if (meta?.cwd === cwd) rollouts.push({ path, meta, mtimeMs: st.mtimeMs })
+    if (meta?.cwd === cwd) rollouts.push({ path, meta, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs })
   }
   return rollouts
 }
@@ -256,15 +261,18 @@ async function readRollouts(sessionsDir: string, files: string[], cwd: string, s
 // When each TUI last looked through every date folder.
 const wideScans = new Map<string, number>()
 
+// shortcut: never pruned, one small entry per exited TUI; drop entries older than a day if that ever matters.
+const exited: Exited[] = []
+
 async function findRollout(sessionsDir: string, cwd: string, start: number, key: string): Promise<Rollout | null> {
   const recent = await Promise.all(dateFolders(new Date(start), new Date()).map((d) =>
     readdir(join(sessionsDir, d)).then((files) => files.map((f) => join(d, f)), () => [])))
-  const found = pickRollout(await readRollouts(sessionsDir, recent.flat(), cwd, start), cwd, start)
+  const found = pickRollout(await readRollouts(sessionsDir, recent.flat(), cwd, start), cwd, start, exited)
   // `codex resume` appends to the thread's file in the folder of the day it was created, however long ago.
   if (found || Date.now() - (wideScans.get(key) ?? -Infinity) < 30_000) return found
   wideScans.set(key, Date.now())
   const all = await readdir(sessionsDir, { recursive: true }).catch(() => [])
-  return pickRollout(await readRollouts(sessionsDir, all, cwd, start), cwd, start)
+  return pickRollout(await readRollouts(sessionsDir, all, cwd, start), cwd, start, exited)
 }
 
 // `${pid}|${procStart}` of Codex processes whose pane has shown the TUI (composer or approval) at least once,
@@ -303,6 +311,9 @@ export async function listCodexSessions(
     const live = new Set(tuis.map((p) => `${p.pid}|${p.lstart}`))
     for (const k of recognised) if (!live.has(k)) recognised.delete(k)
     for (const k of wideScans.keys()) if (!live.has(k)) wideScans.delete(k)
+    for (const s of prev) {
+      if (s.provider === 'codex' && !live.has(`${s.pid}|${s.procStart}`)) exited.push({ cwd: s.cwd, start: Date.parse(`${s.procStart} UTC`), end: Date.now() })
+    }
     if (!tuis.length) return []
 
     // Every codex with a terminal counts toward a shared folder, in tmux or not. A pid gone since ps fails its lookup

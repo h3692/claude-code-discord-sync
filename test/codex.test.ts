@@ -284,6 +284,16 @@ describe('pickRollout', () => {
       { path: 'e', meta: meta(), mtimeMs: start - 1 },
     ], '/w', start)).toBeNull()
   })
+  it('skips threads an exited same-folder TUI could have made, unless written since it ended', () => {
+    const mine = { path: 'a', meta: meta({ id: 'a' }), mtimeMs: start + 5, birthtimeMs: start + 1 }
+    const theirs = { path: 'b', meta: meta({ id: 'b' }), mtimeMs: start + 50, birthtimeMs: start + 20 }
+    const gone = [{ cwd: '/w', start: start + 10, end: start + 60 }]
+    expect(pickRollout([mine, theirs], '/w', start, gone)).toBe(mine)
+    // Resumed after its TUI ended.
+    expect(pickRollout([mine, { ...theirs, mtimeMs: start + 70 }], '/w', start, gone)?.path).toBe('b')
+    // A TUI that exited in another folder changes nothing.
+    expect(pickRollout([mine, theirs], '/w', start, [{ ...gone[0], cwd: '/x' }])).toBe(theirs)
+  })
 })
 
 describe('listCodexSessions', () => {
@@ -392,6 +402,31 @@ describe('listCodexSessions', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('stops matching the threads of a same-folder TUI once it exits', async () => {
+    const dir = await realpath(await mkdtemp(join(home, 'pair-')))
+    await mkdir(join(home, 'sessions', folder), { recursive: true })
+    const write = async (id: string, mtime: number) => {
+      const path = join(home, 'sessions', folder, `rollout-2026-11-15T03-00-00-${id}.jsonl`)
+      await writeFile(path, JSON.stringify({ type: 'session_meta', payload: { id, cwd: dir, originator: 'codex-tui', thread_source: 'user', history_mode: 'paginated' } }) + '\n')
+      await utimes(path, new Date(mtime), new Date(mtime))
+      return path
+    }
+    await write('p1', startMs + 1_000)
+    const theirs = await write('p2', Date.now())
+    const idle = { '%15': await screen('idle_empty'), '%16': await screen('idle_empty') }
+    const a = { pid: 115, tty: 'ttys115', cwd: dir }
+    const b = { pid: 116, tty: 'ttys116', cwd: dir }
+    const both = await listCodexSessions(home, [], quiet, fake([a, b], { ttys115: '%15', ttys116: '%16' }, idle).run, 'darwin')
+    expect(both.map((s) => s.transcript)).toEqual([theirs, theirs])
+    // b exits after making p2 (started before p2 was made); p2 is no longer a's to show.
+    const prev = [both[0], { ...both[1], procStart: 'Sun Nov 15 07:50:28 2026' }]
+    const alone = await listCodexSessions(home, prev, quiet, fake([a], { ttys115: '%15' }, idle).run, 'darwin')
+    expect(alone[0].transcript).not.toBe(theirs)
+    // Until someone resumes it.
+    await utimes(theirs, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+    expect((await listCodexSessions(home, alone, quiet, fake([a], { ttys115: '%15' }, idle).run, 'darwin'))[0].transcript).toBe(theirs)
   })
 
   it('has no transcript and an empty sessionId until the first message creates the rollout', async () => {
