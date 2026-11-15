@@ -108,6 +108,10 @@ export function renderCard(screen: string): { title: string; description: string
   return { title: '🟡 Claude needs you', description: `\`\`\`\n${body}\n\`\`\`` }
 }
 
+export function renderReadOnly(reason: string): string {
+  return `-# 🔒 Read-only: ${reason}. You can follow along here, but messages you send won't reach it. Start Claude Code inside tmux (\`tmux new -s work\`, then \`claude\`) for a channel you can type in.`
+}
+
 export function renderEnded(deleteAfterMs: number): string {
   return `-# 🔚 Session ended · this channel is deleted in ${formatDuration(deleteAfterMs)} · type \`!archive\` to keep it`
 }

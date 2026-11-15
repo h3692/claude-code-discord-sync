@@ -35,8 +35,12 @@ Claude never knows it is there.
 **Homebrew** (macOS and Linux):
 
 ```sh
-brew install h3692/tap/claude-code-discord-sync
+brew tap h3692/tap
+brew trust h3692/tap
+brew install claude-code-discord-sync
 ```
+
+Homebrew asks you to trust a tap before it installs from it.
 
 **npm** (anywhere with Node 24.12 or later):
 
@@ -122,7 +126,8 @@ page yourself; otherwise anyone with the link can add your bot to their server.
 ## What you see in Discord
 
 - **One channel per session** under the **Claude Sessions** category, named after the session and its folder, and
-  renamed once Claude gives the conversation a title.
+  renamed once Claude gives the conversation a title. Channels you can't type into start with 🔒 and say why: the
+  session isn't running inside tmux, it's a background session, or typing on Windows is off.
 - **Claude's replies** as normal messages. Markdown is kept, tables become code blocks and long text is split.
   Prompts you type in the terminal show up as quotes. Thinking is never shown.
 - **A live activity message** for each run of tool calls, edited in place, with one line per tool that changes from
