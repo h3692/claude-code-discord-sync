@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createReadStream } from 'node:fs'
-import { access, readdir, realpath, stat } from 'node:fs/promises'
+import { access, readdir, readlink, realpath, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
@@ -153,8 +153,9 @@ const exec = promisify(execFile)
 const PANE = /^%\d+$/
 // pid, tty, stat, lstart (as ps prints it in the C locale), then comm, last so ps doesn't cut it to 16 characters.
 const PS_LINE = /^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/
-// "error connecting to" is what tmux says when its socket file doesn't exist.
-const NO_SERVER = /no server running|error connecting to/
+// tmux says "no server running" for a socket nobody listens on and "error connecting to … (No such file or directory)"
+// when the server never started; any other connect error (permissions, a stale non-socket) is a failure.
+const NO_SERVER = /no server running|error connecting to .*\(No such file or directory\)/
 
 export type Rollout = { path: string; meta: CodexMeta | null; mtimeMs: number }
 type Run = (file: string, args: string[]) => Promise<string>
@@ -162,13 +163,7 @@ type Run = (file: string, args: string[]) => Promise<string>
 // tmux through its wrapper, so TMUX_SOCKET_NAME holds; ps and lsof in the C locale and UTC, the form checkPane compares.
 async function runTool(file: string, args: string[]): Promise<string> {
   if (file === 'tmux') return (await tmux(...args)).stdout
-  try {
-    return (await exec(file, args, { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } })).stdout
-  } catch (e) {
-    // lsof exits 1 when any listed pid is gone, but still prints the live ones.
-    if (file === 'lsof' && typeof (e as any).code === 'number') return (e as any).stdout ?? ''
-    throw e
-  }
+  return (await exec(file, args, { env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } })).stdout
 }
 
 // `#{pane_id} #{pane_tty}` lines to a map from tty, as ps prints it, to pane id.
@@ -265,6 +260,9 @@ async function findRollout(sessionsDir: string, cwd: string, start: number): Pro
 // so `codex exec` or anything else named codex in a pane never gets a channel.
 const recognised = new Set<string>()
 
+// The last discovery failure logged: a lasting one is logged once, then again when it changes or every ten minutes.
+let lastFailure = { message: '', at: 0 }
+
 // Codex TUIs running in tmux panes. A session whose rollout doesn't exist yet (it's created at the first message)
 // has transcript null and sessionId '', which is a placeholder, not a thread: '' → a real id is not a new conversation.
 // Never throws: when tmux, ps or lsof fails it logs and returns prev, the previous Codex list.
@@ -289,8 +287,18 @@ export async function listCodexSessions(
     for (const k of recognised) if (!live.has(k)) recognised.delete(k)
     if (!tuis.length) return []
 
-    // Every codex with a terminal counts toward a shared folder, in tmux or not.
-    const cwds = parseCwds(await run('lsof', ['-a', '-p', procs.map((p) => p.pid).join(','), '-d', 'cwd', '-Fn']))
+    // Every codex with a terminal counts toward a shared folder, in tmux or not. A pid gone since ps fails its lookup
+    // (lsof exits 1 but still prints the live ones), so a lookup error counts only when no TUI got a cwd.
+    // Linux reads /proc, since lsof isn't on every install.
+    let failure: unknown = null
+    const cwds = platform === 'linux'
+      ? new Map((await Promise.all(procs.map(async (p) => [p.pid, await readlink(`/proc/${p.pid}/cwd`).catch((e) => void (failure = e))] as const)))
+        .filter((e): e is readonly [number, string] => !!e[1]))
+      : parseCwds(await run('lsof', ['-a', '-p', procs.map((p) => p.pid).join(','), '-d', 'cwd', '-Fn']).catch((e) => {
+        failure = e
+        return e.stdout ?? ''
+      }))
+    if (failure && !tuis.some((p) => cwds.has(p.pid))) throw failure
     const sharing = new Map<string, number>()
     for (const cwd of cwds.values()) sharing.set(cwd, (sharing.get(cwd) ?? 0) + 1)
 
@@ -311,7 +319,11 @@ export async function listCodexSessions(
     }
     return sessions
   } catch (e) {
-    log('codex discovery failed:', (e as Error).message)
+    const message = (e as Error).message
+    if (message !== lastFailure.message || Date.now() - lastFailure.at >= 10 * 60_000) {
+      lastFailure = { message, at: Date.now() }
+      log('codex discovery failed:', message)
+    }
     return prev
   }
 }

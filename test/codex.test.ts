@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises'
@@ -388,6 +388,7 @@ describe('listCodexSessions', () => {
     expect(await listCodexSessions(home, prev, (...a) => logged.push(a), failing, 'darwin')).toBe(prev)
     expect(String(logged[0])).toContain('ps: broken')
 
+    // As tmux 3.8 on macOS prints them: a socket nobody listens on, and a server never started (no socket file).
     for (const msg of ['no server running on /tmp/tmux-501/default', 'error connecting to /private/tmp/tmux-501/x (No such file or directory)']) {
       const noServer = async () => {
         throw new Error(`Command failed: tmux list-panes\n${msg}`)
@@ -395,6 +396,59 @@ describe('listCodexSessions', () => {
       expect(await listCodexSessions(home, prev, (...a) => logged.push(a), noServer, 'darwin')).toEqual([])
     }
     expect(logged).toHaveLength(1)
+
+    // Any other tmux error is a failure, not an empty server.
+    const refused = async () => {
+      throw new Error('Command failed: tmux list-panes\nerror connecting to /private/tmp/tmux-501/default (Permission denied)')
+    }
+    expect(await listCodexSessions(home, prev, (...a) => logged.push(a), refused, 'darwin')).toBe(prev)
+    expect(String(logged[1])).toContain('Permission denied')
+  })
+
+  it('treats an lsof that exits non-zero as a failure only when no TUI got its cwd', async () => {
+    const procs = [{ pid: 110, tty: 'ttys110', cwd: realWork }]
+    const { run } = fake(procs, { ttys110: '%10' }, { '%10': await screen('idle_empty') })
+    const lsofFails = (stdout: string) => async (file: string, args: string[]) => {
+      if (file !== 'lsof') return run(file, args)
+      throw Object.assign(new Error('Command failed: lsof -a -p 110,111'), { code: 1, stdout })
+    }
+    const prev = [{ pid: 9 }] as any
+    const logged: unknown[][] = []
+    expect(await listCodexSessions(home, prev, (...a) => logged.push(a), lsofFails(''), 'darwin')).toBe(prev)
+    expect(String(logged[0])).toContain('lsof')
+    // lsof exits 1 when any listed pid is gone, but still prints the live ones.
+    expect(await listCodexSessions(home, prev, quiet, lsofFails(`p110\nfcwd\nn${realWork}\n`), 'darwin')).toMatchObject([{ pid: 110, cwd: realWork }])
+  })
+
+  it('reads cwds from /proc on Linux, without lsof', async () => {
+    const { run, calls } = fake([{ pid: process.pid, tty: 'pts/7', cwd: '' }], { 'pts/7': '%11' }, { '%11': await screen('idle_empty') })
+    const logged: unknown[][] = []
+    const list = await listCodexSessions(home, [], (...a) => logged.push(a), run, 'linux')
+    expect(calls.filter((c) => c[0] === 'lsof')).toEqual([])
+    if (process.platform === 'linux') expect(list).toMatchObject([{ pid: process.pid, cwd: await realpath(process.cwd()) }])
+    else expect(String(logged[0])).toContain(`/proc/${process.pid}/cwd`)
+  })
+
+  it('logs a lasting failure once, then again when it changes or after ten minutes', async () => {
+    const logged: unknown[][] = []
+    const failing = (msg: string) => async (file: string) => {
+      if (file === 'ps') throw new Error(msg)
+      return '%1 /dev/ttys101\n'
+    }
+    const log = (...a: unknown[]) => logged.push(a)
+    try {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      await listCodexSessions(home, [], log, failing('ps: flaky'), 'darwin')
+      await listCodexSessions(home, [], log, failing('ps: flaky'), 'darwin')
+      expect(logged).toHaveLength(1)
+      await listCodexSessions(home, [], log, failing('ps: other'), 'darwin')
+      expect(logged).toHaveLength(2)
+      vi.setSystemTime(Date.now() + 10 * 60_000)
+      await listCodexSessions(home, [], log, failing('ps: other'), 'darwin')
+      expect(logged).toHaveLength(3)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does nothing without a sessions folder or on Windows', async () => {
@@ -415,7 +469,7 @@ const has = (cmd: string, arg: string) => {
 }
 
 // A sleep named codex stands in for the TUI, under the real tmux, ps and lsof.
-describe.skipIf(process.platform === 'win32' || !has('tmux', '-V') || !has('lsof', '-v'))('listCodexSessions on a real tmux pane', () => {
+describe.skipIf(process.platform === 'win32' || !has('tmux', '-V') || (process.platform !== 'linux' && !has('lsof', '-v')))('listCodexSessions on a real tmux pane', () => {
   const socket = `ccds-test-${randomBytes(4).toString('hex')}`
   const tmux = (...args: string[]) => execFileSync('tmux', ['-L', socket, ...args], { encoding: 'utf8' })
   let dir = ''
