@@ -188,6 +188,11 @@ describe('serviceFor win32', () => {
   it("notes that the Run value can't carry the isolation variables", () => {
     expect(serviceFor('win32', { ...win, name: 'ccds-test', env: isolated }).note).toMatch(/CCDS_NAME/)
   })
+
+  it('passes CODEX_HOME through, without the isolation note on Windows', () => {
+    expect(serviceFor('darwin', { ...mac, env: { CODEX_HOME: '/x/codex' } }).file!.text).toContain('<key>CODEX_HOME</key>\n\t\t<string>/x/codex</string>')
+    expect(serviceFor('win32', { ...win, env: { CODEX_HOME: 'C:\\codex' } }).note).toBeUndefined()
+  })
 })
 
 describe('serviceFor', () => {

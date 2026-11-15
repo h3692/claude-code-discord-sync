@@ -51,6 +51,7 @@ switch (command) {
       guildId,
       userId,
       claudeDir: process.env.CLAUDE_DIR || join(homedir(), '.claude'),
+      codexHome: process.env.CODEX_HOME || join(homedir(), '.codex'),
       ttl: Number(process.env.CCDS_ENDED_TTL_MS) || 3_600_000,
     })
     break

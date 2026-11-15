@@ -4,7 +4,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, serialQueue, shouldConfirm, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import {
+  acquireLock, CATEGORY, codexStart, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, serialQueue, shouldConfirm,
+  startOffset, typeCodex, typingRefusal, unanswer,
+} from '../src/index.ts'
+import { parseCodexLine } from '../src/codex.ts'
 import { newMirror } from '../src/mirror.ts'
 
 // Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
@@ -301,6 +305,107 @@ describe('freshEvents', () => {
   it('keeps lines from the last 5s before first sight onwards, and lines without a timestamp', () => {
     const lines = [prompt('2026-11-14T11:59:56Z'), prompt('2026-11-14T12:00:01Z'), prompt()]
     expect(freshEvents(lines, seenAt)).toHaveLength(3)
+  })
+})
+
+describe('freshEvents for Codex', () => {
+  it('drops rollout lines from before the session was first seen (a resumed thread)', () => {
+    const seenAt = Date.parse('2026-11-14T12:00:00Z')
+    const line = (timestamp: string) => JSON.stringify({ timestamp, type: 'event_msg', payload: { type: 'task_complete', duration_ms: 1 } })
+    expect(freshEvents([line('2026-11-10T09:00:00Z'), line('2026-11-14T12:00:01Z')], seenAt, parseCodexLine)).toEqual([
+      { kind: 'turn_end', durationMs: 1, pendingAgents: 0 },
+    ])
+  })
+})
+
+describe('typeCodex', () => {
+  function io(states: string[], pane: string | null = null, fail = false) {
+    const calls: string[] = []
+    return {
+      calls,
+      io: {
+        state: async () => (calls.push('state'), states.shift()!),
+        checkPane: async () => (calls.push('checkPane'), pane),
+        paste: async () => {
+          calls.push('paste')
+          if (fail) throw new Error('tmux load-buffer exited with 1')
+        },
+        enter: async () => void calls.push('enter'),
+      },
+    }
+  }
+
+  it('checks the screen and the pane, pastes, checks the screen again, and only then presses Enter', async () => {
+    const t = io(['idle', 'idle'])
+    expect(await typeCodex('hello\nworld', false, t.io)).toBeNull()
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter'])
+  })
+
+  it('refuses before touching the pane when two Codex sessions share the folder', async () => {
+    const t = io(['idle', 'idle'])
+    expect(await typeCodex('hello', true, t.io)).toBe('two Codex sessions share this folder; reply in the terminal')
+    expect(t.calls).toEqual([])
+  })
+
+  it.each(['!ls', 'fine\n!rm -rf ~', 'fine\n   !ls', 'fine\n\u200b!ls', 'fine\n！ls', 'fine\r\n!ls', 'fine\n\x01!ls'])(
+    'refuses %j, since a line starting with ! would run as a shell command', async (text) => {
+      const t = io(['idle', 'idle'])
+      expect(await typeCodex(text, false, t.io)).toMatch(/starts with `!`/)
+      expect(t.calls).toEqual([])
+    })
+
+  it('refuses unless the first capture shows the prompt', async () => {
+    const unknown = io(['unknown'])
+    expect(await typeCodex('hello', false, unknown.io)).toBe("can't confirm Codex is at its prompt")
+    expect(unknown.calls).toEqual(['state'])
+    const waiting = io(['waiting'])
+    expect(await typeCodex('hello', false, waiting.io)).toBe('a prompt is open — use the buttons or `!keys`')
+    expect(waiting.calls).toEqual(['state'])
+  })
+
+  it('refuses when the pane check fails, before pasting', async () => {
+    const t = io(['idle'], 'Claude Code is suspended (Ctrl-Z)')
+    expect(await typeCodex('hello', false, t.io)).toBe('Claude Code is suspended (Ctrl-Z)')
+    expect(t.calls).toEqual(['state', 'checkPane'])
+  })
+
+  it('leaves Enter unpressed when the screen changed after the paste (a popup opened)', async () => {
+    for (const second of ['unknown', 'waiting']) {
+      const t = io(['idle', second])
+      expect(await typeCodex('look at @src', false, t.io)).toBe("pasted but not sent — Codex isn't at its prompt; check the terminal")
+      expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state'])
+    }
+  })
+
+  it('passes a failed paste on, without pressing Enter', async () => {
+    const t = io(['idle', 'idle'], null, true)
+    await expect(typeCodex('hello', false, t.io)).rejects.toThrow(/load-buffer/)
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste'])
+  })
+})
+
+describe('codexStart', () => {
+  const meta = { id: 't', cwd: '/p', originator: 'codex-tui', threadSource: 'user', historyMode: 'paginated', forkedFromId: null }
+
+  it('keeps the offset for an ordinary thread, or an unreadable header', () => {
+    expect(codexStart(meta, 0, 900)).toEqual({ offset: 0, notice: null })
+    expect(codexStart(null, 0, 900)).toEqual({ offset: 0, notice: null })
+  })
+
+  it('starts a forked thread at its end, so the history it copied is not replayed', () => {
+    expect(codexStart({ ...meta, forkedFromId: 'parent' }, 0, 900)).toEqual({ offset: 900, notice: null })
+  })
+
+  it('says when a thread records no output', () => {
+    expect(codexStart({ ...meta, historyMode: 'legacy' }, 0, 900)).toEqual({
+      offset: 0, notice: "-# 📭 This Codex thread doesn't record its output; only approvals and typing work here.",
+    })
+  })
+})
+
+describe('CATEGORY', () => {
+  it('puts each provider in its own live category', () => {
+    expect(CATEGORY).toEqual({ claude: 'Claude Sessions', codex: 'Codex Sessions' })
   })
 })
 
