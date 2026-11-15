@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <em>Every Claude Code session on your computer, in its own Discord channel.</em>
+  <em>Every Claude Code and Codex session on your computer, in its own Discord channel.</em>
 </p>
 
 <p align="center">
@@ -16,19 +16,20 @@
 <p align="center">
   <a href="#install"><strong>Install</strong></a>
   &middot; <a href="#setup">Setup</a>
+  &middot; <a href="#codex">Codex</a>
   &middot; <a href="#how-it-works">How it works</a>
   &middot; <a href="#faq">FAQ</a>
 </p>
 
 ---
 
-claude-code-discord-sync mirrors each Claude Code session running on your computer into its own channel in a
-Discord server you own. You see Claude's replies, its tool calls and its questions as they happen, and you can
+claude-code-discord-sync mirrors each Claude Code and OpenAI Codex CLI session running on your computer into its
+own channel in a Discord server you own. You see the replies, tool calls and questions as they happen, and you can
 answer prompts with buttons or type messages into the session from your phone.
 
-It is a small watcher that runs next to Claude Code, not a hook, plugin or MCP server. It reads the files Claude
-Code already writes under `~/.claude` and types into tmux, so it adds no tokens or context to your sessions and
-Claude never knows it is there.
+It is a small watcher that runs next to Claude Code and Codex, not a hook, plugin or MCP server. It reads the files
+they already write under `~/.claude` and `~/.codex` and types into tmux, so it adds no tokens or context to your
+sessions and neither Claude nor Codex knows it is there.
 
 ## Install
 
@@ -53,9 +54,9 @@ npm install -g --allow-remote=all https://github.com/h3692/claude-code-discord-s
 Requirements:
 
 - Node.js 24.12 or later
-- tmux (macOS and Linux). Sessions must run inside tmux to be controlled from Discord. Sessions outside tmux are
-  mirrored read-only.
-- Claude Code
+- tmux (macOS and Linux). Sessions must run inside tmux to be controlled from Discord. Claude Code sessions outside
+  tmux are mirrored read-only; Codex sessions outside tmux aren't mirrored.
+- Claude Code, OpenAI Codex CLI, or both. Codex works on macOS and Linux (including WSL), not on native Windows.
 
 Upgrading this tool with Homebrew or npm doesn't need setup again: the login service runs the installed
 `claude-code-discord-sync` command, whose path stays the same. The new version starts at your next login, or re-run
@@ -160,6 +161,37 @@ land in it by accident.
 Any other message starting with `!` is refused. Claude Code runs input that starts with `!` as a shell command, so
 the watcher never types it, and `!type` refuses text that starts with `!` too.
 
+## Codex
+
+Start Codex inside tmux and its channel appears under **Codex Sessions**, named after its folder:
+
+```sh
+tmux new -s work
+codex
+```
+
+The channel shows your prompts, Codex's replies, shell commands, file edits, MCP calls, web searches, the subagent
+panel and the done ping, the same way as for Claude. Ended and archived Codex channels go to the same **Ended
+Sessions** and **Archive** categories.
+
+When Codex asks for approval, for example to run a command, edit files or use the network, you get a **🟡 Codex needs you** card with one
+button per option. A button sends the option's number, which Codex takes as the answer straight away, so there is no
+second step. If the options can't be read, the card shows the screen and a hint to answer with `!keys`.
+
+Typing from Discord works only when the watcher can see that Codex is at its prompt. It refuses while Codex is in
+shell mode, while a popup, menu or approval is open, or when it doesn't recognise the screen. A message with any line
+that starts with `!` is refused, because a leading `!` puts Codex into shell mode. `!keys` and `!archive` work as
+they do for Claude.
+
+Limits:
+
+- Tool lines appear once a command finishes, not while it runs. Codex only records finished items.
+- With two Codex sessions in the same folder, their output may mix in both channels, and typing into them is refused.
+  Approval buttons still work.
+- Codex running outside tmux isn't mirrored.
+- Codex isn't supported on native Windows.
+- It never uses Codex's app-server or daemon, and never changes Codex's config.
+
 ## Commands
 
 | Command | What it does |
@@ -173,7 +205,7 @@ the watcher never types it, and `!type` refuses text that starts with `!` too.
 
 ```mermaid
 flowchart LR
-  A[Claude Code] -->|writes| B["~/.claude/sessions<br/>and transcripts"]
+  A[Claude Code or Codex] -->|writes| B["~/.claude and ~/.codex<br/>transcripts"]
   B -->|read every second| C["Watcher<br/>no hooks, no tokens"]
   C --> D[Discord channel]
   D -->|message or button| C
@@ -184,6 +216,9 @@ flowchart LR
 
 - **Reading.** Claude Code keeps a registry of live sessions in `~/.claude/sessions` and a transcript of each
   conversation under `~/.claude/projects`. The watcher reads both and posts what is new.
+- **Codex.** Codex keeps no registry of running sessions, so the watcher finds `codex` in tmux panes and matches
+  each one to its session file under `~/.codex/sessions` by folder and start time. Its screen tells whether Codex is
+  at its prompt or asking for approval.
 - **Prompts.** When a session is waiting on you, the watcher reads the prompt from the tmux pane to build the card
   and its buttons.
 - **Typing.** Messages and button clicks from you are checked, then pasted into the session's tmux pane with
@@ -203,14 +238,15 @@ flowchart LR
   pane is not in copy mode. A button answer is typed only if the prompt hasn't changed. On Windows, where there is
   no terminal to compare, it checks that the pane runs Claude Code, that only `cmd.exe`, `powershell.exe` or
   `pwsh.exe` sit between the pane and Claude, and that each parent started before its child.
-- **No shell commands.** Messages starting with `!` are never typed.
+- **No shell commands.** Messages starting with `!` are never typed. For Codex, neither is a message with any line
+  starting with `!`.
 - **One instance.** A lock file stops a second watcher from starting.
 
 Two things to know before you install:
 
 - **Your Discord account becomes a remote keyboard for your computer.** Anyone who gets into it can type into your
-  Claude Code sessions. Turn on two-factor authentication.
-- **Everything Claude prints is sent to Discord**, including code, file paths and any secret that appears in its
+  Claude Code and Codex sessions. Turn on two-factor authentication.
+- **Everything Claude or Codex prints is sent to Discord**, including code, file paths and any secret that appears in its
   output.
 
 ## Configuration
@@ -223,12 +259,13 @@ Setup covers everything most people need. These environment variables change the
 | `DISCORD_GUILD_ID` | from setup | ID of the server to mirror into. |
 | `DISCORD_USER_ID` | from setup | Your Discord user ID: the only user whose messages and clicks are acted on, and the one who gets pinged. |
 | `CLAUDE_DIR` | `~/.claude` | Claude Code's data folder. |
+| `CODEX_HOME` | `~/.codex` | Codex's data folder. Codex mirroring is off when its `sessions` folder doesn't exist. |
 | `CCDS_ENDED_TTL_MS` | `3600000` (1 hour) | How long an ended session's channel is kept before it is deleted, in milliseconds. |
 | `TMUX_SOCKET_NAME` | | tmux socket name (as in `tmux -L <name>`), to use instead of the default server. |
 | `CCDS_NAME` | `claude-code-discord-sync` | Names the config folder, the stored secret and the login service. Set it to run a second, isolated copy. |
 | `CCDS_WINDOWS_TYPING` | | Set to `1` to allow typing on native Windows. |
 
-The login service gets only `CCDS_NAME`, `CLAUDE_DIR` and `XDG_CONFIG_HOME` from the environment setup ran in; the
+The login service gets only `CCDS_NAME`, `CLAUDE_DIR`, `CODEX_HOME` and `XDG_CONFIG_HOME` from the environment setup ran in; the
 other variables apply when you run `claude-code-discord-sync start` yourself. On Windows, the watcher started at
 login sees only your persistent user variables, so set `CCDS_WINDOWS_TYPING` with `setx CCDS_WINDOWS_TYPING 1`,
 then sign out and back in (or re-run `claude-code-discord-sync setup` from a new terminal, which restarts the watcher).
@@ -237,6 +274,9 @@ then sign out and back in (or re-run `claude-code-discord-sync setup` from a new
 
 **Does it use tokens or add context to my sessions?**
 No. It only reads files Claude Code already writes and types into tmux, the way you would. Claude never sees it.
+
+**Does it cost Codex tokens?**
+No, for the same reason. It reads Codex's session files and its screen in tmux, and types the way you would.
 
 **How is it different from Claude Code's Discord plugin or channels?**
 A plugin runs inside the session and takes up its context. This runs outside Claude Code and needs nothing from
@@ -247,16 +287,16 @@ A bot token can't be shared safely. Whoever holds a shared bot's token could rea
 own bot, everything stays between your computer and your server.
 
 **Why tmux?**
-It is how the watcher reads prompts on screen and types into a session safely. Sessions outside tmux are still
-mirrored, read-only.
+It is how the watcher reads prompts on screen and types into a session safely. Claude Code sessions outside tmux
+are still mirrored, read-only. Codex sessions are found through tmux, so they need it.
 
 **Can I run it on two computers?**
 Not into the same server. When a watcher starts, it closes every session channel whose session it can't find on its
 own computer, so two watchers would close each other's channels. Use a separate server for each computer.
 
 **What are the limits?**
-- It relies on undocumented Claude Code internals: the session registry, the transcript format and the layout of
-  prompts on screen. A Claude Code update can break it.
+- It relies on undocumented Claude Code and Codex internals: the session registry, the transcript format and the
+  layout of prompts on screen. A Claude Code or Codex update can break it.
 - It talks to one tmux server: the default one, or the one named by `TMUX_SOCKET_NAME`.
 - Multi-select and other prompts without a plain numbered list get no buttons. Answer them with `!keys`.
 - Output produced while the watcher is not running is not backfilled.
