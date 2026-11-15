@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { programOf, serviceFor } from '../src/service.ts'
+import { join } from 'node:path'
+import { programOf, runSteps, serviceFor } from '../src/service.ts'
 
 const mac = {
   name: 'claude-code-discord-sync', node: '/opt/homebrew/Cellar/node/24.12.0/bin/node',
@@ -43,14 +44,24 @@ describe('serviceFor darwin', () => {
 `)
   })
 
-  it('boots out any old job (ignoring failure), then bootstraps; uninstall boots out', () => {
+  it('boots out any old job (ignoring failure), waits until it is gone, then bootstraps; uninstall boots out and waits', () => {
     const s = serviceFor('darwin', mac)
+    const bootout = { file: 'launchctl', args: ['bootout', 'gui/501/claude-code-discord-sync'], mayFail: true }
+    const gone = { file: 'launchctl', args: ['print', 'gui/501/claude-code-discord-sync'], untilFails: true }
     expect(s.install).toEqual([
-      { file: 'launchctl', args: ['bootout', 'gui/501/claude-code-discord-sync'], mayFail: true },
-      { file: 'launchctl', args: ['bootstrap', 'gui/501', '/Users/me/Library/LaunchAgents/claude-code-discord-sync.plist'] },
+      bootout, gone,
+      { file: 'launchctl', args: ['bootstrap', 'gui/501', '/Users/me/Library/LaunchAgents/claude-code-discord-sync.plist'], retries: 3 },
     ])
-    expect(s.uninstall).toEqual([{ file: 'launchctl', args: ['bootout', 'gui/501/claude-code-discord-sync'], mayFail: true }])
+    expect(s.uninstall).toEqual([bootout, gone])
     expect(s.query).toEqual({ file: 'launchctl', args: ['print', 'gui/501/claude-code-discord-sync'] })
+    expect(s.log).toBe('/Users/me/Library/Logs/claude-code-discord-sync.log')
+  })
+
+  it('runs the bare bin shim, not node on its path, so a node upgrade does not break it', () => {
+    const cli = '/opt/homebrew/bin/claude-code-discord-sync'
+    const text = serviceFor('darwin', { ...mac, cli }).file!.text
+    expect(text).toContain(`<array>\n\t\t<string>${cli}</string>\n\t\t<string>start</string>\n\t</array>`)
+    expect(programOf('darwin', text)).toEqual([cli])
   })
 
   it('passes CCDS_NAME, CLAUDE_DIR and XDG_CONFIG_HOME through only when set', () => {
@@ -86,6 +97,7 @@ Description=claude-code-discord-sync
 
 [Service]
 ExecStart="/usr/bin/node" "/usr/lib/node_modules/claude-code-discord-sync/dist/cli.js" start
+Environment="PATH=/usr/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
 Restart=on-failure
 RestartSec=30
 
@@ -98,6 +110,7 @@ WantedBy=default.target
     const s = serviceFor('linux', { ...linux, name: 'ccds-test', env: isolated })
     expect(s.file?.path).toBe('/tmp/x/svc-live/systemd/user/ccds-test.service')
     expect(s.file?.text).toContain(`start
+Environment="PATH=/usr/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="CCDS_NAME=ccds-test"
 Environment="CLAUDE_DIR=/tmp/x/claude-empty"
 Environment="XDG_CONFIG_HOME=/tmp/x/svc-live"
@@ -128,6 +141,13 @@ Restart=on-failure`)
     expect(s.install.slice(1).every((c) => !c.fallback && !c.mayFail)).toBe(true)
     expect(s.uninstall).toEqual([{ file: 'systemctl', args: ['--user', 'disable', '--now', 'claude-code-discord-sync'], mayFail: true }])
     expect(s.query).toEqual({ file: 'systemctl', args: ['--user', 'is-active', 'claude-code-discord-sync'] })
+    expect(s.log).toBeUndefined()
+  })
+
+  it('runs the bare bin shim', () => {
+    const text = serviceFor('linux', { ...linux, cli: '/home/linuxbrew/.linuxbrew/bin/claude-code-discord-sync' }).file!.text
+    expect(text).toContain('ExecStart="/home/linuxbrew/.linuxbrew/bin/claude-code-discord-sync" start\n')
+    expect(programOf('linux', text)).toEqual(['/home/linuxbrew/.linuxbrew/bin/claude-code-discord-sync'])
   })
 })
 
@@ -151,6 +171,16 @@ describe('serviceFor win32', () => {
     expect(s.uninstall).toEqual([{ file: 'reg', args: ['delete', RUN, '/v', 'claude-code-discord-sync', '/f'], mayFail: true }])
     expect(s.query).toEqual({ file: 'reg', args: ['query', RUN, '/v', 'claude-code-discord-sync'] })
     expect(s.note).toBeUndefined()
+    expect(s.log).toBe(join('C:\\Users\\me', 'AppData', 'Local', 'claude-code-discord-sync', 'watcher.log'))
+    expect(serviceFor('win32', { ...win, env: { LOCALAPPDATA: 'D:\\L' } }).log).toBe(join('D:\\L', 'claude-code-discord-sync', 'watcher.log'))
+  })
+
+  it('stops a running watcher before starting the new one, and on uninstall', () => {
+    const s = serviceFor('win32', { ...win, watcher: 4242 })
+    const kill = { file: 'taskkill', args: ['/PID', '4242', '/F'], mayFail: true }
+    expect(s.install.map((c) => c.file)).toEqual(['reg', 'taskkill', win.node])
+    expect(s.install[1]).toEqual(kill)
+    expect(s.uninstall).toEqual([{ file: 'reg', args: ['delete', RUN, '/v', 'claude-code-discord-sync', '/f'], mayFail: true }, kill])
   })
 
   it("notes that the Run value can't carry the isolation variables", () => {
@@ -162,6 +192,45 @@ describe('serviceFor', () => {
   it('refuses a name that could leave the service folder', () => {
     expect(() => serviceFor('darwin', { ...mac, name: '../evil' })).toThrow()
     expect(() => serviceFor('linux', { ...mac, name: 'a b' })).toThrow()
+  })
+})
+
+describe('runSteps', () => {
+  const steps = serviceFor('darwin', mac).install
+  const fake = (results: Record<string, boolean[]>) => {
+    const calls: string[] = []
+    const exec = ({ args }: { args: string[] }) => {
+      calls.push(args[0])
+      if (results[args[0]]?.shift() === false) throw new Error(`${args[0]} failed`)
+      return ''
+    }
+    return { calls, exec }
+  }
+
+  it('waits until the booted-out job is gone before bootstrapping', () => {
+    const { calls, exec } = fake({ print: [true, true, false] })
+    const sleeps: number[] = []
+    expect(runSteps(steps, () => {}, exec, (ms) => sleeps.push(ms))).toBe(true)
+    expect(calls).toEqual(['bootout', 'print', 'print', 'print', 'bootstrap'])
+    expect(sleeps).toEqual([200, 200])
+  })
+
+  it('stops waiting after 10 s, then retries a failing bootstrap', () => {
+    const { calls, exec } = fake({ print: Array(100).fill(true), bootstrap: [false, false, true] })
+    let slept = 0
+    runSteps(steps, () => {}, exec, (ms) => (slept += ms))
+    expect(calls.filter((c) => c === 'print')).toHaveLength(50)
+    expect(calls.slice(-3)).toEqual(['bootstrap', 'bootstrap', 'bootstrap'])
+    expect(slept).toBe(50 * 200 + 2 * 1000)
+  })
+
+  it('throws once the retries run out, and prints a fallback instead of throwing', () => {
+    const { exec } = fake({ print: [false], bootstrap: [false, false, false, false] })
+    expect(() => runSteps(steps, () => {}, exec, () => {})).toThrow('bootstrap failed')
+    const lines: string[] = []
+    const linux = serviceFor('linux', mac).install
+    expect(runSteps(linux, (l) => lines.push(l), () => { throw new Error('no systemd') }, () => {})).toBe(false)
+    expect(lines).toEqual([linux[0].fallback])
   })
 })
 
