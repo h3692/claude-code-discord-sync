@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readFile } from 'node:fs/promises'
-import { parseCodexLine, readCodexMeta } from '../src/codex.ts'
+import { codexScreen, parseCodexLine, readCodexMeta } from '../src/codex.ts'
 
 const fixture = (name: string) => readFile(new URL(`./fixtures/codex/${name}`, import.meta.url), 'utf8')
 const item = (item: object, timestamp = '2026-11-15T08:00:00.000Z') =>
@@ -119,5 +119,76 @@ describe('readCodexMeta', () => {
     for (const line of ['', 'null', '{"type":"session_meta"', '{"type":"event_msg","payload":{"id":"x"}}', '{"type":"session_meta","payload":{}}']) {
       expect(readCodexMeta(line)).toBeNull()
     }
+  })
+})
+
+describe('codexScreen', () => {
+  const screen = (name: string) => fixture(`screens/${name}.txt`)
+  const commandDialog = (cmd: string) => ({
+    question: 'Would you like to run the following command?',
+    options: [
+      { n: 1, label: 'Yes, proceed' },
+      { n: 2, label: `Yes, and don't ask again for commands that start with \`${cmd}\`` },
+      { n: 3, label: 'No, and tell Codex what to do differently' },
+    ],
+    hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+    cursor: 1,
+  })
+
+  it.each([
+    ['idle_empty', 'idle'], ['idle_empty_embedded', 'idle'], ['idle_draft', 'idle'], ['idle_with_history', 'idle'],
+    ['idle_resumed', 'idle'], ['idle_after_new', 'idle'], ['working', 'idle'], ['working_with_draft', 'idle'],
+    ['paste_multiline_draft', 'idle'], ['paste_atword_after_enter', 'idle'], ['approval_after_digit', 'idle'], ['approval_after_esc', 'idle'],
+    ['shell_mode_empty', 'unknown'], ['shell_mode_draft', 'unknown'], ['popup_file', 'unknown'], ['popup_slash', 'unknown'],
+    ['popup_skill', 'unknown'], ['paste_atword_popup', 'unknown'], ['model_picker', 'unknown'], ['startup_hooks_review', 'unknown'],
+    ['startup_update_prompt', 'unknown'], ['after_quit_shell', 'unknown'],
+    ['approval_command', 'waiting'], ['approval_queued_first', 'waiting'], ['approval_queued_second', 'waiting'], ['approval_edit', 'waiting'],
+  ])('reads %s as %s', async (name, state) => {
+    const s = codexScreen(await screen(name))
+    expect(s.state).toBe(state)
+    if (state !== 'waiting') expect(s.dialog).toBeNull()
+  })
+
+  it('parses command and edit approvals into dialogs, without confirm', async () => {
+    expect(codexScreen(await screen('approval_command')).dialog).toEqual(commandDialog('touch probe1.txt'))
+    expect(codexScreen(await screen('approval_queued_first')).dialog).toEqual(commandDialog('touch probe2.txt'))
+    expect(codexScreen(await screen('approval_queued_second')).dialog).toEqual(commandDialog('touch probe3.txt'))
+    expect(codexScreen(await screen('approval_edit')).dialog).toEqual({
+      question: 'Would you like to make the following edits?',
+      options: [
+        { n: 1, label: 'Yes, proceed' },
+        { n: 2, label: "Yes, and don't ask again for these files" },
+        { n: 3, label: 'No, and tell Codex what to do differently' },
+      ],
+      hash: expect.stringMatching(/^[0-9a-f]{12}$/),
+      cursor: 1,
+    })
+  })
+
+  it('hashes the command, not the cursor', async () => {
+    const first = codexScreen(await screen('approval_queued_first')).dialog!
+    expect(codexScreen(await screen('approval_queued_second')).dialog!.hash).not.toBe(first.hash)
+    const moved = (await screen('approval_queued_first')).replace('› 1. Yes', '  1. Yes').replace('  2. Yes, and', '› 2. Yes, and')
+    expect(codexScreen(moved)).toEqual({ state: 'waiting', dialog: { ...first, cursor: 2 } })
+  })
+
+  it('keeps an approval it cannot parse strictly as waiting, with no dialog', async () => {
+    const gap = (await screen('approval_command')).replace('  3. No,', '  4. No,')
+    expect(codexScreen(gap)).toEqual({ state: 'waiting', dialog: null })
+  })
+
+  it('reads near-misses as unknown', async () => {
+    const approval = await screen('approval_command')
+    const lines = approval.split('\n')
+    const near = [
+      approval.replace('Would you like to run the following command?', 'Would you like to delete everything?'),
+      approval.replace(/\n$/, '\n  1. Yes\n'),
+      approval.replace('  2. Yes, and', '› 2. Yes, and'),
+      lines.slice(lines.findIndex((l) => l.startsWith('› 1.'))).join('\n'),
+      (await screen('idle_draft')).replace('› say hi', '! say hi'),
+      (await screen('idle_empty')).split('\n').slice(0, -2).join('\n'),
+      '',
+    ]
+    for (const s of near) expect(codexScreen(s)).toEqual({ state: 'unknown', dialog: null })
   })
 })

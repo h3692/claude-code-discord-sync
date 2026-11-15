@@ -88,7 +88,7 @@ export function screenHash(screen: string): string {
 }
 
 // The ❯ cursor is dropped so arrow-key navigation doesn't look like a new prompt.
-function hashBody(lines: string[]): string {
+export function hashBody(lines: string[]): string {
   const body = lines.map((l) => l.trim().replace(/^❯\s*/, '')).filter(Boolean).join('\n')
   return createHash('sha256').update(body).digest('hex').slice(0, 12)
 }
