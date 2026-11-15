@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, serialQueue, shouldConfirm, startOffset, typingRefusal, unanswer } from '../src/index.ts'
 import { newMirror } from '../src/mirror.ts'
 
 // Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
@@ -317,8 +317,20 @@ describe('missCount', () => {
   })
 })
 
+describe('shouldConfirm', () => {
+  const fresh = { question: 'Which layout?', options: [{ n: 1, label: 'A' }, { n: 2, label: 'B' }], hash: 'abc', cursor: 2, confirm: true } as const
+
+  it('presses Enter only on the same preview question with the highlight on the chosen option', () => {
+    expect(shouldConfirm(fresh, 'abc', 2)).toBe(true)
+    expect(shouldConfirm(null, 'abc', 2)).toBe(false)
+    expect(shouldConfirm({ ...fresh, confirm: undefined }, 'abc', 2)).toBe(false)
+    expect(shouldConfirm(fresh, 'def', 2)).toBe(false)
+    expect(shouldConfirm(fresh, 'abc', 1)).toBe(false)
+  })
+})
+
 describe('unanswer', () => {
-  const dialog = { question: 'Proceed?', options: [{ n: 1, label: 'Yes' }], hash: 'abc' }
+  const dialog = { question: 'Proceed?', options: [{ n: 1, label: 'Yes' }], hash: 'abc', cursor: 1 }
   const withCard = (hash: string, answered: string | null) => ({
     ...newMirror({ pid: 42, procStart: 'x', sessionId: 's1', cwd: '/p', name: 'n', pane: '%1', status: 'waiting' }, 'u1').state,
     card: { ref: 'r7', hash, screenHash: 'sh', dialog: hash === 'abc' ? dialog : null, answered, repeats: 0 },

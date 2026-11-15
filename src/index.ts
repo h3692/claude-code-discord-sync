@@ -14,6 +14,7 @@ import { renderEnded } from './render.ts'
 import { listSessions, readStatus } from './sessions.ts'
 import type { Session } from './sessions.ts'
 import { capture, checkPane, parseDialog, pasteText, sendKeys } from './tmux.ts'
+import type { Dialog } from './tmux.ts'
 import { parseLine, readAppended } from './transcript.ts'
 import type { TranscriptEvent } from './transcript.ts'
 
@@ -125,6 +126,11 @@ export function typingRefusal(a: Typing, status: string | null, freshHash: strin
 // A transcript born moments ago is read from the start; an older one (resume, -c) only from its current end.
 export function startOffset(birthtimeMs: number, size: number, now: number): number {
   return birthtimeMs >= now - 15_000 ? 0 : size
+}
+
+// A preview question gets its Enter only while the digit has visibly moved the highlight on that same question.
+export function shouldConfirm(fresh: Dialog | null, hash: string, n: number): boolean {
+  return !!fresh?.confirm && fresh.hash === hash && fresh.cursor === n
 }
 
 // Resuming appends the old conversation under the new session id; lines older than its first sight are history.
@@ -325,6 +331,18 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
     }
   }
 
+  // The digit alone first; Enter only if a fresh capture shows it landed on the question the button was for.
+  async function confirmKeys(pane: string, digit: string, hash: string): Promise<string | null> {
+    await sendKeys(pane, [digit])
+    await new Promise((r) => setTimeout(r, 300))
+    const screen = await capture(pane).catch(() => null)
+    if (!shouldConfirm(screen ? parseDialog(screen) : null, hash, Number(digit))) {
+      return "the highlight moved but the answer wasn't confirmed — check the terminal, or send `!keys Enter`"
+    }
+    await sendKeys(pane, ['Enter'])
+    return null
+  }
+
   // Keystrokes skip the send queue (rate-limited sends must not delay them) and run in order per pane.
   // origin: the button click that produced the action, so a refused keystroke can still be reported.
   function typeInto(e: Entry, a: Typing, origin?: string): void {
@@ -336,7 +354,8 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
       const screen = a.type === 'keys' && a.hash && status === 'waiting' ? await capture(pane).catch(() => null) : null
       const reason = typingRefusal(a, status, screen ? parseDialog(screen)?.hash ?? null : null)
         ?? await checkPane(pane, e.pid, e.procStart)
-        ?? await (a.type === 'paste' ? pasteText(pane, a.text) : sendKeys(pane, a.keys)).then(() => null, (err) => err.message)
+        ?? await (a.type === 'paste' ? pasteText(pane, a.text) : a.hash && a.keys[1] === 'Enter' ? confirmKeys(pane, a.keys[0], a.hash) : sendKeys(pane, a.keys))
+          .then((r) => r ?? null, (err) => err.message)
       if (reason) {
         log(`not sent to ${pane}: ${reason}`)
         // The next poll re-posts a reset card; an unsent paste must not swallow a later identical terminal prompt.

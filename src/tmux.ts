@@ -8,7 +8,8 @@ import { powershell, runAsync } from './config.ts'
 import { sameStartFt, windowsStartTimes } from './sessions.ts'
 
 // confirm: an option preview pane is shown, where a digit only moves the highlight and Enter answers.
-export type Dialog = { question: string; options: { n: number; label: string }[]; hash: string; confirm?: true }
+// cursor: the option the ❯ highlight is on.
+export type Dialog = { question: string; options: { n: number; label: string }[]; hash: string; cursor: number; confirm?: true }
 
 const OPTION = /^\s*(❯\s+)?(\d+)\.\s+(.+)$/
 const SEPARATOR = /^[\s─╌▔]+$/
@@ -16,6 +17,7 @@ export const BORDER = /^ *─{10,} *$/
 const CHECKBOX = /^\[[ ✔xX✓]\]/
 // The preview pane AskUserQuestion draws beside its options; its art follows the highlight.
 const PREVIEW = /\s{2,}[┌│└├╭╰].*$/
+const PANE_TOP = /\s{2,}┌─{3,}┐\s*$/
 const PANE = /^%\d+$/
 // What may sit between a psmux pane's process and Claude Code on Windows.
 const SHELLS = new Set(['cmd.exe', 'powershell.exe', 'pwsh.exe'])
@@ -39,15 +41,22 @@ export function parseDialog(screen: string): Dialog | null {
   const start = lines.findLastIndex((l, i) => i <= last && column(l) === col && OPTION.exec(l)?.[2] === '1')
   if (start < 0) return null
 
+  // Labels are model-authored, so only the pane's top edge beside option 1 plus Claude Code's own footer prove a preview.
+  const confirm = PANE_TOP.test(lines[start]) && !!lines.findLast((l) => l.trim())?.includes('n to add notes')
+  const cut = (l: string) => (confirm ? l.replace(PREVIEW, '') : l)
   const options: { n: number; label: string }[] = []
   let cursors = 0
+  let cursor = 0
   let i = start
   for (; i < lines.length; i++) {
     const m = OPTION.exec(lines[i])
     if (m && column(lines[i]) === col) {
       if (Number(m[2]) !== options.length + 1) return null
-      if (m[1]) cursors++
-      options.push({ n: Number(m[2]), label: m[3].replace(PREVIEW, '').trimEnd() })
+      if (m[1]) {
+        cursors++
+        cursor = Number(m[2])
+      }
+      options.push({ n: Number(m[2]), label: cut(m[3]).trimEnd() })
     } else if (isBlank(i) || (!isSeparator(i) && lines[i].search(/\S/) <= col)) {
       break
     }
@@ -66,10 +75,9 @@ export function parseDialog(screen: string): Dialog | null {
   const top = lines.findIndex((l) => BORDER.test(l))
   const first = top < start ? top + 1 : 0
   // The pane is cut only beside the options, so box art in a command above them still changes the hash.
-  const rows = lines.slice(start, last + 1).map((l) => l.replace(PREVIEW, ''))
+  const rows = lines.slice(start, last + 1).map(cut)
   const hash = hashBody([...lines.slice(first, start), ...rows])
-  // The pane's top edge sits beside the first option; descriptions under normal options never flag it.
-  return PREVIEW.test(lines[start]) ? { question, options, hash, confirm: true } : { question, options, hash }
+  return confirm ? { question, options, hash, cursor, confirm: true } : { question, options, hash, cursor }
 }
 
 // Identifies a prompt that parseDialog can't read: the dialog region below the highest border, or the last 25 non-blank lines.

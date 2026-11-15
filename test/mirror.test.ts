@@ -364,7 +364,7 @@ describe('step: prompt cards', () => {
       { type: 'edit', ref: a.state.card!.ref, content: '✅ Yes — via Discord', embed: { title: '✅ Answered', description: 'Do you want to proceed?' }, buttons: [] },
       expect.objectContaining({
         type: 'send', ref: r.state.card!.ref, ping: true, embed: renderCard(screen('approval_bash')),
-        content: "<@u1>\n⚠️ That answer didn't go through — try again, or send `!keys Enter`",
+        content: "<@u1>\n⚠️ That question is still open — try again, or send `!keys Enter`",
       }),
     ])
     expect(r.state.card).toMatchObject({ answered: null, repeats: 0 })

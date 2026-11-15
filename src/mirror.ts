@@ -54,7 +54,7 @@ const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!k
 const NO_TMUX = "Claude is waiting for you, but this session isn't in tmux — answer at the terminal."
 const NO_SCREEN = "Claude is waiting for you, but the screen couldn't be read — answer at the terminal, or try `!keys`."
 const CLOSED = 'That prompt is no longer open.'
-const RETRY = "\n⚠️ That answer didn't go through — try again, or send `!keys Enter`"
+const RETRY = "\n⚠️ That question is still open — try again, or send `!keys Enter`"
 const READ_ONLY = "👀 Read-only: this session isn't running in tmux."
 const BAD_KEYS = '⌨️ Allowed keys: digits 0-9, Up, Down, Left, Right, Enter, Escape, Tab, BTab, Space, BSpace (max 20). Example: `!keys Down Enter`'
 

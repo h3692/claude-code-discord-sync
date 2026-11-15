@@ -65,6 +65,22 @@ describe('parseDialog', () => {
     expect(parseDialog(await screen('ask_preview_moved'))?.hash).toBe(d?.hash) // the preview follows the highlight
     expect(parseDialog((await screen('ask_preview')).replace('3. Tabs', '3. Grid'))?.hash).not.toBe(d?.hash)
     expect(parseDialog(await screen('ask_single'))?.confirm).toBeUndefined()
+    expect(d?.cursor).toBe(1)
+    expect(parseDialog(await screen('ask_preview_moved'))?.cursor).toBe(2)
+  })
+
+  // Labels are model-authored: box art in one must not pass for the pane, so it is neither cut nor flags Enter.
+  it('flags the preview layout only from the real pane and its notes footer', async () => {
+    const two = await screen('ask_two')
+    for (const art of ['  │ note', '  ┌───┐']) {
+      const d = parseDialog(two.replace('❯ 1. Small', `❯ 1. Small${art}`))
+      expect(d?.confirm).toBeUndefined()
+      expect(d?.options[0].label).toBe(`Small${art}`)
+      expect(d?.hash).not.toBe(parseDialog(two)?.hash)
+    }
+    for (const name of ['approval_bash', 'ask_single', 'ask_two', 'ask_two_q2', 'ask_two_review', 'plan_approval']) {
+      expect(parseDialog(await screen(name))?.confirm).toBeUndefined()
+    }
   })
 
   it('rejects the trust screen and multi-select questions', async () => {
