@@ -239,21 +239,32 @@ export async function header(path: string): Promise<CodexMeta | null> {
   }
 }
 
-async function findRollout(sessionsDir: string, cwd: string, start: number): Promise<Rollout | null> {
+// Same-folder rollouts among files (relative to sessionsDir); only those written since start get their header read.
+async function readRollouts(sessionsDir: string, files: string[], cwd: string, start: number): Promise<Rollout[]> {
   const rollouts: Rollout[] = []
-  for (const folder of dateFolders(new Date(start), new Date())) {
-    const dir = join(sessionsDir, folder)
-    for (const f of await readdir(dir).catch(() => [])) {
-      if (!f.startsWith('rollout-') || !f.endsWith('.jsonl')) continue
-      const path = join(dir, f)
-      const meta = await header(path)
-      // Only same-folder headers are worth a stat.
-      if (meta?.cwd !== cwd) continue
-      const st = await stat(path).catch(() => null)
-      if (st) rollouts.push({ path, meta, mtimeMs: st.mtimeMs })
-    }
+  for (const f of files) {
+    if (!basename(f).startsWith('rollout-') || !f.endsWith('.jsonl')) continue
+    const path = join(sessionsDir, f)
+    const st = await stat(path).catch(() => null)
+    if (!st || st.mtimeMs < start) continue
+    const meta = await header(path)
+    if (meta?.cwd === cwd) rollouts.push({ path, meta, mtimeMs: st.mtimeMs })
   }
-  return pickRollout(rollouts, cwd, start)
+  return rollouts
+}
+
+// When each TUI last looked through every date folder.
+const wideScans = new Map<string, number>()
+
+async function findRollout(sessionsDir: string, cwd: string, start: number, key: string): Promise<Rollout | null> {
+  const recent = await Promise.all(dateFolders(new Date(start), new Date()).map((d) =>
+    readdir(join(sessionsDir, d)).then((files) => files.map((f) => join(d, f)), () => [])))
+  const found = pickRollout(await readRollouts(sessionsDir, recent.flat(), cwd, start), cwd, start)
+  // `codex resume` appends to the thread's file in the folder of the day it was created, however long ago.
+  if (found || Date.now() - (wideScans.get(key) ?? -Infinity) < 30_000) return found
+  wideScans.set(key, Date.now())
+  const all = await readdir(sessionsDir, { recursive: true }).catch(() => [])
+  return pickRollout(await readRollouts(sessionsDir, all, cwd, start), cwd, start)
 }
 
 // `${pid}|${procStart}` of Codex processes whose pane has shown the TUI (composer or approval) at least once,
@@ -291,6 +302,7 @@ export async function listCodexSessions(
     const tuis = procs.filter((p) => panes.has(p.tty))
     const live = new Set(tuis.map((p) => `${p.pid}|${p.lstart}`))
     for (const k of recognised) if (!live.has(k)) recognised.delete(k)
+    for (const k of wideScans.keys()) if (!live.has(k)) wideScans.delete(k)
     if (!tuis.length) return []
 
     // Every codex with a terminal counts toward a shared folder, in tmux or not. A pid gone since ps fails its lookup
@@ -317,7 +329,7 @@ export async function listCodexSessions(
       if (state !== 'unknown') recognised.add(key)
       const cwd = cwds.get(p.pid)
       if (!recognised.has(key) || !cwd) continue
-      const rollout = await findRollout(sessionsDir, cwd, Date.parse(`${p.lstart} UTC`))
+      const rollout = await findRollout(sessionsDir, cwd, Date.parse(`${p.lstart} UTC`), key)
       sessions.push({
         pid: p.pid, procStart: p.lstart, sessionId: rollout?.meta?.id ?? '', cwd, name: '', status: state, interactive: true, pane,
         transcript: rollout?.path ?? null, provider: 'codex', ambiguous: (sharing.get(cwd) ?? 0) > 1,

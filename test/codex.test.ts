@@ -369,6 +369,31 @@ describe('listCodexSessions', () => {
     expect(await listCodexSessions(home, [], quiet, fake(later, { ttys113: '%13' }, { '%13': shell['%12'] }).run, 'darwin')).toEqual([])
   })
 
+  // `codex resume` appends to the thread's file in the date folder it was created in.
+  it('finds a thread resumed from an older date folder, looking there at most every 30 seconds per TUI', async () => {
+    const dir = await realpath(await mkdtemp(join(home, 'resumed-')))
+    const old = join(home, 'sessions', '2026', '09', '01')
+    await mkdir(old, { recursive: true })
+    const write = async (name: string) => {
+      const path = join(old, name)
+      await writeFile(path, JSON.stringify({ type: 'session_meta', payload: { id: name, cwd: dir, originator: 'codex-tui', thread_source: 'user', history_mode: 'paginated' } }) + '\n')
+      await utimes(path, new Date(startMs + 5_000), new Date(startMs + 5_000))
+      return path
+    }
+    const idle = { '%14': await screen('idle_empty') }
+    const list = () => listCodexSessions(home, [], quiet, fake([{ pid: 114, tty: 'ttys114', cwd: dir }], { ttys114: '%14' }, idle).run, 'darwin')
+    try {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      expect(await list()).toMatchObject([{ transcript: null }])
+      const path = await write('rollout-2026-09-01T10-00-00-r1.jsonl')
+      expect(await list()).toMatchObject([{ transcript: null }])
+      vi.setSystemTime(Date.now() + 30_000)
+      expect(await list()).toMatchObject([{ transcript: path, sessionId: 'rollout-2026-09-01T10-00-00-r1.jsonl' }])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('has no transcript and an empty sessionId until the first message creates the rollout', async () => {
     const { run } = fake([{ pid: 102, tty: 'ttys102', cwd: lonely }], { ttys102: '%2' }, { '%2': await screen('idle_empty') })
     expect(await listCodexSessions(home, [], quiet, run, 'darwin')).toMatchObject([{ pid: 102, sessionId: '', transcript: null, cwd: lonely }])
