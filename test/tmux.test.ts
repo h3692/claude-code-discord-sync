@@ -1,8 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { readdirSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
-import { capture, checkPane, parseDialog, parseKeys, pasteText, sameTty, sanitizePaste, screenHash, sendKeys } from '../src/tmux.ts'
+import { tmpdir } from 'node:os'
+import { once } from 'node:events'
+import {
+  ancestry, ancestryRefusal, capture, checkPane, checkPaneInfo, parseDialog, parseKeys, pasteText, sameTty, sanitizePaste, screenHash, sendKeys,
+} from '../src/tmux.ts'
 
 const screen = (name: string) => readFile(new URL(`./fixtures/screens/${name}.txt`, import.meta.url), 'utf8')
 
@@ -174,6 +179,71 @@ describe('sameTty', () => {
   })
 })
 
+describe('checkPaneInfo', () => {
+  it('takes the pane pid when the pane shows Claude Code and is not in copy mode', () => {
+    expect(checkPaneInfo('4412 0 claude\n')).toEqual({ panePid: 4412 })
+    expect(checkPaneInfo('4412 0 Claude.EXE\r\n')).toEqual({ panePid: 4412 })
+  })
+
+  it('refuses copy mode, another program, and missing or unexpanded fields', () => {
+    expect(checkPaneInfo('4412 1 claude')).toEqual({ refuse: 'tmux pane is in copy mode' })
+    for (const command of ['pwsh', 'nvim', 'claude-helper', 'node']) expect(checkPaneInfo(`4412 0 ${command}`)).toHaveProperty('refuse')
+    for (const info of ['', '\r\n', ' 0 claude', '4412  claude', '4412 0 ', '#{pane_pid} 0 claude', '0 0 claude', '12345678901 0 claude', '4412 0 claude extra'])
+      expect(checkPaneInfo(info), JSON.stringify(info)).toHaveProperty('refuse')
+  })
+})
+
+// Lines as the ancestry script prints them: pid, parent pid, CreationDate as FILETIME, image name.
+describe('ancestryRefusal', () => {
+  const chain = [
+    '4000 3000 134012345678903000 claude.exe',
+    '3000 2000 134012345678902000 pwsh.exe',
+    '2000 1000 134012345678901000 cmd.exe',
+  ]
+  it('passes when the pane pid is an ancestor through allowlisted shells, or is Claude itself', () => {
+    expect(ancestryRefusal(chain.join('\r\n') + '\r\n', 4000, 2000)).toBeNull()
+    expect(ancestryRefusal(chain.slice(0, 2).join('\n'), 4000, 3000)).toBeNull()
+    expect(ancestryRefusal(chain[0], 4000, 4000)).toBeNull()
+    expect(ancestryRefusal(['4000 3000 1 claude.exe', '3000 2000 1 PowerShell.exe', '2000 1 1 x.exe'].join('\n'), 4000, 2000)).toBeNull()
+  })
+
+  it('refuses a process between the pane and Claude that is not a plain shell', () => {
+    const nvim = ['4000 3000 134012345678903000 claude.exe', '3000 2000 134012345678902000 nvim.exe', '2000 1000 134012345678901000 cmd.exe']
+    expect(ancestryRefusal(nvim.join('\n'), 4000, 2000)).toMatch(/nvim\.exe/)
+  })
+
+  it('refuses a parent created after its child (a reused parent pid)', () => {
+    const reused = [chain[0], '3000 2000 134012345678909999 pwsh.exe', chain[2]]
+    expect(ancestryRefusal(reused.join('\n'), 4000, 2000)).toMatch(/reused/)
+  })
+
+  it('refuses when the pane pid is not in the chain, or the chain is broken, empty or unreadable', () => {
+    expect(ancestryRefusal(chain.join('\n'), 4000, 999)).toBe('tmux pane is not running this session')
+    expect(ancestryRefusal(chain.join('\n'), 5000, 2000)).not.toBeNull()
+    expect(ancestryRefusal([chain[0], chain[2]].join('\n'), 4000, 2000)).not.toBeNull()
+    expect(ancestryRefusal('', 4000, 4000)).not.toBeNull()
+    expect(ancestryRefusal('4000 3000 notatime claude.exe', 4000, 4000)).not.toBeNull()
+  })
+})
+
+describe('Windows typing', () => {
+  it('is off unless CCDS_WINDOWS_TYPING=1, before anything else is checked', async () => {
+    for (const env of [{}, { CCDS_WINDOWS_TYPING: '0' }, { CCDS_WINDOWS_TYPING: 'true' }]) {
+      expect(await checkPane('%1', process.pid, '1', 'win32', env)).toBe('typing on Windows is experimental; set CCDS_WINDOWS_TYPING=1 to try it')
+    }
+  })
+
+  it('refuses when typing is on but the start time cannot be confirmed', async () => {
+    expect(await checkPane('%1', process.pid, '1', 'win32', { CCDS_WINDOWS_TYPING: '1' })).not.toBeNull()
+  })
+
+  it('refuses multi-line text before touching the pane', async () => {
+    for (const text of ['a\nb', 'a\r\nb', 'a\rb', '!ls\n']) {
+      await expect(pasteText('%1', text, 'win32')).rejects.toThrow(/multi-line/)
+    }
+  })
+})
+
 const hasTmux = (() => {
   try {
     execFileSync('tmux', ['-V'])
@@ -214,6 +284,17 @@ describe.skipIf(!hasTmux || process.platform === 'win32')('tmux exec wrappers', 
       text = await capture(pane)
     }
     expect(text).toMatch(/a\n[\s\S]*b[\s\S]*1/)
+
+    // The Windows paste loads the buffer from a temp file, which real tmux also accepts.
+    const temps = () => readdirSync(tmpdir()).filter((f) => /^ccds-[\w]{6}$/.test(f))
+    const before = temps()
+    await pasteText(pane, 'via file', 'win32')
+    for (let i = 0; i < 40 && !text.includes('via file'); i++) {
+      await new Promise((r) => setTimeout(r, 50))
+      text = await capture(pane)
+    }
+    expect(text).toContain('via file')
+    expect(temps()).toEqual(before)
     expect(await checkPane(pane, 999999, 'Thu Jan  1 00:00:00 1970')).not.toBeNull()
     expect(await checkPane(pane, process.pid, 'Thu Jan  1 00:00:00 1970')).not.toBeNull()
     expect(await checkPane('%999999', process.pid, 'x')).not.toBeNull()
@@ -259,6 +340,25 @@ describe.skipIf(!hasTmux || process.platform === 'win32')('tmux exec wrappers', 
     } finally {
       // Background jobs outlive kill-server's hangup, so end them here.
       for (const p of [bg, stopped]) process.kill(p, 'SIGKILL')
+    }
+  })
+})
+
+describe.runIf(process.platform === 'win32')('Windows process ancestry (real PowerShell)', () => {
+  it('walks from a spawned child up to this process, oldest last, and refuses node in between', async () => {
+    const child = spawn('cmd.exe', ['/c', 'ping', '-n', '10', '127.0.0.1'], { stdio: 'ignore' })
+    await once(child, 'spawn')
+    try {
+      const text = await ancestry(child.pid!, process.pid)
+      const lines = text.trim().split(/\r?\n/)
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toMatch(new RegExp(`^${child.pid} ${process.pid} \\d+ cmd\\.exe$`, 'i'))
+      expect(lines[1]).toMatch(new RegExp(`^${process.pid} \\d+ \\d+ node\\.exe$`, 'i'))
+      expect(ancestryRefusal(text, child.pid!, process.pid)).toBeNull()
+      // This process (node.exe) sits between its parent and the child, and is not a shell.
+      expect(ancestryRefusal(await ancestry(child.pid!, process.ppid), child.pid!, process.ppid)).toMatch(/node\.exe/i)
+    } finally {
+      child.kill()
     }
   })
 })

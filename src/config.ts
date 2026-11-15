@@ -1,10 +1,11 @@
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { text } from 'node:stream/consumers'
 import { Writable } from 'node:stream'
+import { promisify } from 'node:util'
 
 type Env = Record<string, string | undefined>
 export type Config = { guildId?: string; userId?: string }
@@ -60,6 +61,9 @@ export const dpapiDecrypt = (blob: string): Command => powershell(DPAPI +
   "[Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()), $null, 'CurrentUser'))", blob)
 
 export const run = ({ file, args, input, env }: Command): string => execFileSync(file, args, { input, env, encoding: 'utf8', stdio: 'pipe', windowsHide: true })
+// For the watcher, which must not block or hang on a slow PowerShell: any failure or timeout rejects. Takes no stdin.
+export const runAsync = async ({ file, args, env }: Command): Promise<string> =>
+  (await promisify(execFile)(file, args, { env, encoding: 'utf8', timeout: 10_000, windowsHide: true })).stdout
 
 const tokenFileFor = (platform: string, env: Env, home: string): string =>
   platform === 'win32'

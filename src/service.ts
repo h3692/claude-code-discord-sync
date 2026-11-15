@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { appName, configDirFor, deleteToken, readConfig, readToken, run } from './config.ts'
 import type { Command } from './config.ts'
-import { listSessions } from './sessions.ts'
+import { listSessions, readRegistry, windowsStartTimes } from './sessions.ts'
 import { checkPane } from './tmux.ts'
 
 type Env = Record<string, string | undefined>
@@ -199,11 +200,25 @@ export async function status(platform = process.platform as string, env: Env = p
   console.log(`tmux: ${tmux}`)
 
   const claudeDir = env.CLAUDE_DIR || join(homedir(), '.claude')
-  const sessions = await listSessions(join(claudeDir, 'sessions'), join(claudeDir, 'projects'))
+  const sessionsDir = join(claudeDir, 'sessions')
+  if (platform === 'win32') {
+    console.log(`Windows typing: ${env.CCDS_WINDOWS_TYPING === '1' ? 'on (CCDS_WINDOWS_TYPING=1)' : 'off (set CCDS_WINDOWS_TYPING=1 to try it)'}`)
+    // Every registry entry with procStartFt exactly as written and the start time measured now, to diagnose a mismatch.
+    const entries = await readRegistry(sessionsDir)
+    const measured = entries.length ? await windowsStartTimes(entries.map((e) => e.pid)).catch((e: Error) => `failed: ${e.message}`) : new Map()
+    for (const e of entries) {
+      const text = await readFile(join(sessionsDir, `${e.pid}.json`), 'utf8').catch(() => '')
+      const raw = /"procStartFt"\s*:\s*("[^"]*"|[^\s,}]+)/.exec(text)?.[1] ?? 'missing'
+      console.log(`  pid ${e.pid}: procStartFt ${raw}, measured ${typeof measured === 'string' ? measured : measured.get(e.pid) ?? 'none'}`)
+    }
+  }
+  const sessions = await listSessions(sessionsDir, join(claudeDir, 'projects'), platform)
   console.log(`Sessions: ${sessions.length || 'none'}`)
+  const typingOff = platform === 'win32' && env.CCDS_WINDOWS_TYPING !== '1'
   for (const x of sessions) {
-    // Bead 6: on Windows, print the raw procStartFt and the measured start time here.
-    const why = !x.interactive ? 'background session' : !x.pane ? 'not in tmux' : await checkPane(x.pane, x.pid, x.procStart)
+    // The full checks run even with Windows typing off, so status shows whatever else would block it.
+    const why = !x.interactive ? 'background session' : !x.pane ? 'not in tmux'
+      : await checkPane(x.pane, x.pid, x.procStart, platform, { ...env, CCDS_WINDOWS_TYPING: '1' }) ?? (typingOff ? 'checks pass, but Windows typing is off' : null)
     console.log(`  ${x.name} (pid ${x.pid}${x.pane ? `, pane ${x.pane}` : ''}): ${why ? `read-only, ${why}` : 'can type'}`)
   }
 }

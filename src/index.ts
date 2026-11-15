@@ -7,7 +7,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, Client, EmbedBuilder, Events, GatewayIntentBits, Message, MessageFlags,
 } from 'discord.js'
 import type { ButtonInteraction, CategoryChannel, Guild, TextChannel } from 'discord.js'
-import { appName, configDirFor } from './config.ts'
+import { appName, configDirFor, powershell, run } from './config.ts'
 import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor } from './mirror.ts'
 import type { Action, Button, Input, State } from './mirror.ts'
 import { renderEnded } from './render.ts'
@@ -33,13 +33,19 @@ export function isWatcherCommand(command: string): boolean {
   return /(?:src[\\/]cli\.ts|claude-code-discord-sync[\\/]dist[\\/]cli\.js|(?:^|[\\/\s])claude-code-discord-sync)"?\s+start(?=\s|$)|src[\\/]index\.ts/.test(command)
 }
 
+// The command line of a pid: empty from PowerShell once it is gone, while ps exits 1.
+export function commandLine(pid: number): string {
+  if (process.platform === 'win32') return run(powershell(`(Get-CimInstance Win32_Process -Filter ('ProcessId=' + ${pid})).CommandLine`))
+  return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } })
+}
+
 // A live pid holds the lock only while it still runs this watcher: after a reboot the pid may belong to anything.
 function isWatcher(pid: number): boolean {
   try {
-    return isWatcherCommand(execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }))
+    return isWatcherCommand(commandLine(pid))
   } catch (e) {
-    // ps exits 1 for a pid that is gone; if ps can't run at all, the live pid is the best we have.
-    return typeof (e as { status?: unknown }).status !== 'number'
+    // ps exits 1 for a pid that is gone; if ps or PowerShell can't run at all, the live pid is the best we have.
+    return process.platform === 'win32' || typeof (e as { status?: unknown }).status !== 'number'
   }
 }
 

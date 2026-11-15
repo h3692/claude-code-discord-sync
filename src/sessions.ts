@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { access, readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
+import { powershell, runAsync } from './config.ts'
 
 export type Session = {
   pid: number; procStart: string; sessionId: string; cwd: string; name: string
@@ -14,7 +15,7 @@ const exec = promisify(execFile)
 const squash = (s: string) => s.trim().replace(/\s+/g, ' ')
 
 // The registry is an undocumented format, so entries stay loosely typed and anything unexpected is skipped.
-async function readRegistry(sessionsDir: string): Promise<any[]> {
+export async function readRegistry(sessionsDir: string): Promise<any[]> {
   const files = await readdir(sessionsDir).catch(() => [])
   const entries = await Promise.all(files.filter((f) => f.endsWith('.json')).map(async (f) => {
     try {
@@ -71,6 +72,52 @@ async function startTimes(pids: number[]): Promise<Map<number, string> | null> {
   return starts
 }
 
+// "pid FILETIME" lines; anything else is skipped.
+export function parseStartTimes(stdout: string): Map<number, string> {
+  const starts = new Map<number, string>()
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+    if (m) starts.set(Number(m[1]), m[2])
+  }
+  return starts
+}
+
+// Start time per live pid as a FILETIME (100 ns ticks since 1601, UTC); rejects when PowerShell fails or times out.
+// .NET directly, so no module has to load; single quotes only, so Windows argv quoting can't mangle the script.
+export async function windowsStartTimes(pids: number[]): Promise<Map<number, string>> {
+  return parseStartTimes(await runAsync(powershell(
+    `foreach ($n in ${pids.join(',')}) { try { '{0} {1}' -f $n, [Diagnostics.Process]::GetProcessById($n).StartTime.ToFileTimeUtc() } catch {} }; exit 0`,
+  )))
+}
+
+// Claude Code's procStartFt against a measured FILETIME, both digit strings.
+export function sameStartFt(recorded: string, measured: string): boolean {
+  if (!/^\d+$/.test(recorded) || !/^\d+$/.test(measured)) return false
+  if (recorded === measured) return true
+  // A JSON number above 2^53 reaches us rounded to a double: allow its spacing (16 ticks, 1.6 µs, for today's dates).
+  const n = Number(recorded)
+  if (n <= Number.MAX_SAFE_INTEGER || String(n) !== recorded) return false
+  const diff = BigInt(recorded) - BigInt(measured)
+  return (diff < 0n ? -diff : diff) <= 2n ** BigInt(Math.floor(Math.log2(n)) - 52)
+}
+
+// procStartFt as a string, whether Claude Code wrote a JSON number or a string.
+const startFt = (e: any): string => (['number', 'string'].includes(typeof e.procStartFt) ? String(e.procStartFt) : '')
+
+// Checked once per (pid, procStartFt): sessions are listed every second, and PowerShell takes about that long to start.
+export const verifiedStarts = new Map<string, boolean>()
+
+// Unlike ps on Unix, a failed PowerShell check drops the sessions it was asked about, and is retried next time.
+async function verifiedOnWindows(entries: any[]): Promise<any[]> {
+  const key = (e: any) => `${e.pid}|${startFt(e)}`
+  const unknown = entries.filter((e) => !verifiedStarts.has(key(e)))
+  if (unknown.length) {
+    const starts = await windowsStartTimes(unknown.map((e) => e.pid)).catch(() => null)
+    for (const e of starts ? unknown : []) verifiedStarts.set(key(e), sameStartFt(startFt(e), starts!.get(e.pid) ?? ''))
+  }
+  return entries.filter((e) => verifiedStarts.get(key(e)) === true)
+}
+
 async function findTranscript(projectsDir: string, dirs: string[], sessionId: string): Promise<string | null> {
   for (const dir of dirs) {
     const path = join(projectsDir, dir, `${sessionId}.jsonl`)
@@ -82,19 +129,21 @@ async function findTranscript(projectsDir: string, dirs: string[], sessionId: st
   return null
 }
 
-export async function listSessions(sessionsDir: string, projectsDir: string): Promise<Session[]> {
+export async function listSessions(sessionsDir: string, projectsDir: string, platform = process.platform as string): Promise<Session[]> {
   const running = (await readRegistry(sessionsDir)).filter((e) => alive(e.pid))
   if (!running.length) return []
-  const starts = await startTimes(running.map((e) => e.pid))
+  const windows = platform === 'win32'
+  const starts = windows ? null : await startTimes(running.map((e) => e.pid))
   // Without ps we cannot detect pid reuse, so a live pid is the best we have.
-  const live = starts ? running.filter((e) => starts.get(e.pid) === squash(String(e.procStart ?? ''))) : running
+  const live = windows ? await verifiedOnWindows(running)
+    : starts ? running.filter((e) => starts.get(e.pid) === squash(String(e.procStart ?? ''))) : running
   live.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))
   const dirs = await readdir(projectsDir).catch(() => [])
   return Promise.all(live.map(async (e): Promise<Session> => {
     const cwd = typeof e.cwd === 'string' ? e.cwd : ''
     const pane = typeof e.tmux === 'string' ? e.tmux.slice(e.tmux.lastIndexOf('.') + 1) : ''
     return {
-      pid: e.pid, procStart: e.procStart ?? '', sessionId: e.sessionId, cwd, name: (typeof e.name === 'string' && e.name) || basename(cwd),
+      pid: e.pid, procStart: windows ? startFt(e) : e.procStart ?? '', sessionId: e.sessionId, cwd, name: (typeof e.name === 'string' && e.name) || basename(cwd),
       status: e.status ?? '', interactive: e.kind === 'interactive', pane: PANE.test(pane) ? pane : null,
       transcript: await findTranscript(projectsDir, dirs, e.sessionId),
     }

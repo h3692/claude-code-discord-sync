@@ -54,6 +54,15 @@ describe('cli', () => {
     expect(r.stdout).toContain('Sessions: none')
   })
 
+  it.runIf(process.platform === 'win32')('on Windows, status prints the raw procStartFt, the measured start time and the typing switch', () => {
+    mkdirSync(join(scratch, 'claude', 'sessions'), { recursive: true })
+    writeFileSync(join(scratch, 'claude', 'sessions', `${process.pid}.json`), `{"pid":${process.pid},"sessionId":"sid-w","procStartFt":"123"}`)
+    const r = run('status')
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Windows typing: off')
+    expect(r.stdout).toMatch(new RegExp(`pid ${process.pid}: procStartFt "123", measured \\d+`))
+  })
+
   it('uninstalls: removes the config folder and says Discord is left alone', () => {
     const dir = join(scratch, env.CCDS_NAME)
     mkdirSync(dir, { recursive: true })

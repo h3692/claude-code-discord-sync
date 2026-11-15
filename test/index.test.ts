@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
 import { newMirror } from '../src/mirror.ts'
 
 const lockPath = () => join(mkdtempSync(join(tmpdir(), 'ccds-lock-')), 'lock')
@@ -72,6 +72,12 @@ describe.skipIf(process.platform === 'win32')('acquireLock', () => {
       writeFileSync(path, body)
       expect(acquireLock(path)).toBe(true)
     }
+  })
+})
+
+describe('commandLine', () => {
+  it('reads the command line of a live process', () => {
+    expect(commandLine(process.pid)).toMatch(/node|vitest/i)
   })
 })
 
