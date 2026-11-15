@@ -9,6 +9,9 @@ import {
   ancestry, ancestryRefusal, capture, checkPane, checkPaneInfo, parseDialog, parseKeys, pasteText, sameTty, sanitizePaste, screenHash, sendKeys,
 } from '../src/tmux.ts'
 
+// Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
+process.env.TMUX_SOCKET_NAME = 'ccds-test-guard'
+
 const screen = (name: string) => readFile(new URL(`./fixtures/screens/${name}.txt`, import.meta.url), 'utf8')
 
 describe('parseDialog', () => {
@@ -272,7 +275,7 @@ describe.skipIf(!hasTmux || process.platform === 'win32')('tmux exec wrappers', 
       tmux('kill-server')
     } catch {}
     await rm(path, { force: true })
-    delete process.env.TMUX_SOCKET_NAME
+    process.env.TMUX_SOCKET_NAME = 'ccds-test-guard'
   })
 
   it('pastes text, sends keys, captures the pane, and refuses an unverified pane', async () => {

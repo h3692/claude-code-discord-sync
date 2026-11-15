@@ -7,6 +7,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, serialQueue, startOffset, typingRefusal, unanswer } from '../src/index.ts'
 import { newMirror } from '../src/mirror.ts'
 
+// Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
+process.env.TMUX_SOCKET_NAME = 'ccds-test-guard'
+
 const lockPath = () => join(mkdtempSync(join(tmpdir(), 'ccds-lock-')), 'lock')
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 function deferred<T>() {
