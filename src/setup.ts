@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { configDirFor, promptHidden, readConfig, readToken, writeConfig, writeToken } from './config.ts'
+import { installService } from './service.ts'
 
 export type Guild = { id: string; name: string; permissions: string; approximate_member_count?: number }
 type User = { id: string; username: string; flags?: number }
@@ -22,6 +23,7 @@ export type Io = {
   hasTmux: () => boolean
   readToken: () => string | null
   writeToken: (token: string) => void
+  installService: (log: (line: string) => void) => void
   configPath: string
 }
 
@@ -107,6 +109,7 @@ const real: Io = {
   },
   readToken: () => readToken(),
   writeToken: (token) => writeToken(token),
+  installService: (log) => installService(log),
   configPath: join(configDirFor(process.platform, process.env, homedir()), 'config.json'),
 }
 
@@ -176,6 +179,8 @@ export async function setup(over: Partial<Io> = {}): Promise<void> {
     io.log(`${why} Try again.`)
   }
   io.log(`Bot: ${bot.username}`)
+  // Saved now: Discord shows a token once, so a later failure mustn't cost a reset.
+  if (fresh) io.writeToken(token)
   let app = await api<App>('GET', '/applications/@me')
 
   // 5. Who may type.
@@ -254,8 +259,15 @@ export async function setup(over: Partial<Io> = {}): Promise<void> {
   // You and the bot are 2; anyone more reads the channels.
   if (members > 2) io.log(`Warning: others are in this server, and everything Claude prints goes there.`)
 
-  // 10. Save.
-  if (fresh) io.writeToken(token)
+  // 10. Save (the token was saved in step 4).
   writeConfig(io.configPath, { guildId: guild.id, userId })
-  io.log(`Saved. Run \`claude-code-discord-sync start\` to start the watcher.`)
+  io.log('Saved.')
+
+  // 11. Start at login.
+  if (!(await confirm('Start automatically at login? [Y/n] ', true))) {
+    io.log('Run `claude-code-discord-sync start` to start the watcher, then start Claude Code inside tmux and a channel appears.')
+    return
+  }
+  io.installService(io.log)
+  io.log('Start Claude Code inside tmux and a channel appears.')
 }

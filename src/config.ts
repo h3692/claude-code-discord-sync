@@ -59,7 +59,7 @@ export const dpapiEncrypt = (token: string): Command => powershell(DPAPI +
 export const dpapiDecrypt = (blob: string): Command => powershell(DPAPI +
   "[Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()), $null, 'CurrentUser'))", blob)
 
-const run = ({ file, args, input, env }: Command): string => execFileSync(file, args, { input, env, encoding: 'utf8', stdio: 'pipe', windowsHide: true })
+export const run = ({ file, args, input, env }: Command): string => execFileSync(file, args, { input, env, encoding: 'utf8', stdio: 'pipe', windowsHide: true })
 
 const tokenFileFor = (platform: string, env: Env, home: string): string =>
   platform === 'win32'

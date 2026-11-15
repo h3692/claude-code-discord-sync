@@ -1,8 +1,11 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process'
+import { mkdirSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { configDirFor, readConfig, readToken } from './config.ts'
+import { appName, configDirFor, readConfig, readToken } from './config.ts'
 import { main } from './index.ts'
+import { status, uninstall } from './service.ts'
 import { setup } from './setup.ts'
 
 const usage = `Usage: claude-code-discord-sync <command>
@@ -16,6 +19,14 @@ Commands:
 const command = process.argv[2]
 switch (command) {
   case 'start': {
+    // The Windows Run entry: detach a hidden watcher that logs to a file, and return.
+    if (process.argv[3] === '--background') {
+      const dir = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), appName(process.env))
+      mkdirSync(dir, { recursive: true })
+      const log = openSync(join(dir, 'watcher.log'), 'a')
+      spawn(process.execPath, [process.argv[1], 'start'], { detached: true, windowsHide: true, stdio: ['ignore', log, log] }).unref()
+      break
+    }
     // Env vars still override the stored setup, so manual setups keep working.
     const config = readConfig(join(configDirFor(process.platform, process.env, homedir()), 'config.json'))
     const token = process.env.DISCORD_BOT_TOKEN || readToken()
@@ -43,9 +54,11 @@ switch (command) {
     }
     break
   case 'status':
+    await status()
+    break
   case 'uninstall':
-    console.error(`${command} is not available yet`)
-    process.exit(1)
+    uninstall()
+    break
   case undefined:
   case 'help':
   case '--help':

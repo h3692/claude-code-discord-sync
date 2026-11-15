@@ -115,6 +115,7 @@ function harness(routes: Routes, over: Record<string, unknown> = {}) {
   const opened: string[] = []
   const questions: string[] = []
   const saved: string[] = []
+  const installs: string[] = []
   const answers = (over.answers as string[] | undefined) ?? []
   const hidden = (over.hidden as string[] | undefined) ?? [fake]
   const io = {
@@ -145,11 +146,12 @@ function harness(routes: Routes, over: Record<string, unknown> = {}) {
     hasTmux: () => true,
     readToken: () => null,
     writeToken: (t: string) => void saved.push(t),
+    installService: (log: (line: string) => void) => { installs.push('install'); log('installed') },
     configPath: join(mkdtempSync(join(tmpdir(), 'ccds-setup-')), 'config.json'),
     ...over,
   }
   const output = () => lines.join('\n')
-  return { io, calls, lines, opened, questions, saved, output, config: () => readConfig(io.configPath) }
+  return { io, calls, lines, opened, questions, saved, installs, output, config: () => readConfig(io.configPath) }
 }
 
 const me = (auth?: string) => (auth === `Bot ${fake}` ? { id: 'bot1', username: 'ccds', avatar: 'a1b2' } : new Response('{}', { status: 401 }))
@@ -175,7 +177,16 @@ describe('setup (non-TTY)', () => {
     expect(h.output()).not.toContain(fake)
     expect(h.output()).toContain('Server 892877557492510771')
     expect(h.output()).toContain(`Who may type: me (${OWNER})`)
-    expect(h.output()).toContain('claude-code-discord-sync start')
+    expect(h.installs).toEqual(['install']) // no terminal: start at login by default
+    expect(h.lines.slice(-2)).toEqual(['installed', 'Start Claude Code inside tmux and a channel appears.'])
+  })
+
+  it('saves a new token as soon as it validates, so a later failure needs no new token', async () => {
+    const h = harness(happy({ 'GET /applications/@me': app({ flags: 0 }), 'PATCH /applications/@me': new Response('{}', { status: 403 }) }))
+    await expect(setup(h.io)).rejects.toThrow(/Message Content/)
+    expect(h.saved).toEqual([fake])
+    expect(h.config()).toEqual({})
+    expect(h.installs).toEqual([])
   })
 
   it('refuses a malformed token without sending it anywhere', async () => {
@@ -209,6 +220,7 @@ describe('setup (non-TTY)', () => {
     const team = { owner_user_id: OWNER, members: [{ user: { id: OWNER, username: 'boss' } }] }
     const h = harness(happy({ 'GET /applications/@me': app({ owner: { id: '999', username: 'team', flags: 1024 }, team }) }))
     await expect(setup(h.io)).rejects.toThrow(/team/i)
+    expect(h.saved).toEqual([fake])
     expect(h.config()).toEqual({})
   })
 
@@ -300,14 +312,14 @@ describe('setup (non-TTY)', () => {
 
 describe('setup (TTY)', () => {
   it('opens the portal and asks again after a rejected token', async () => {
-    const h = harness(happy(), { tty: true, hidden: ['wrong.token-456', 'not a token', fake], answers: [''] })
+    const h = harness(happy(), { tty: true, hidden: ['wrong.token-456', 'not a token', fake], answers: ['', ''] })
     await setup(h.io)
     expect(h.opened).toEqual(['https://discord.com/developers/applications'])
     expect(h.saved).toEqual([fake])
   })
 
   it('asks before replacing a stored bot', async () => {
-    const h = harness(happy(), { tty: true, readToken: () => fake, hidden: [fake], answers: ['n', ''] })
+    const h = harness(happy(), { tty: true, readToken: () => fake, hidden: [fake], answers: ['n', '', ''] })
     await setup(h.io)
     expect(h.questions[0]).toMatch(/Keep the existing bot.*\[Y\/n\]/)
     expect(h.saved).toEqual([fake])
@@ -316,11 +328,11 @@ describe('setup (TTY)', () => {
   it('takes a typed user ID, echoing the account name', async () => {
     const other = '123456789012345678'
     const h = harness(happy({ [`GET /users/${other}`]: { id: other, username: 'friend' } }), {
-      tty: true, answers: ['n', 'abc', other, 'y'],
+      tty: true, answers: ['n', 'abc', other, 'y', ''],
     })
     await setup(h.io)
     expect(h.output()).toMatch(/17 to 20 digits/)
-    expect(h.questions.at(-1)).toContain('friend')
+    expect(h.questions.at(-2)).toContain('friend')
     expect(h.config().userId).toBe(other)
   })
 
@@ -330,7 +342,7 @@ describe('setup (TTY)', () => {
     const h = harness(happy({
       'GET /applications/@me': app({ owner: { id: '999', username: 'team', flags: 1024 }, team }),
       [`GET /users/${other}`]: { id: other, username: 'friend' },
-    }), { tty: true, answers: ['', other, ''] })
+    }), { tty: true, answers: ['', other, '', ''] })
     await setup(h.io)
     expect(h.questions[0]).toMatch(/\[y\/N\]/)
     expect(h.config().userId).toBe(other)
@@ -338,9 +350,25 @@ describe('setup (TTY)', () => {
 
   it('lets the user pick among several servers', async () => {
     const h = harness(happy({ 'GET /users/@me/guilds?with_counts=true': [guild('g1'), guild('g2')] }), {
-      tty: true, answers: ['', '9', '2'],
+      tty: true, answers: ['', '9', '2', ''],
     })
     await setup(h.io)
     expect(h.config().guildId).toBe('g2')
+  })
+
+  it('asks to start at login, installing on yes', async () => {
+    const h = harness(happy(), { tty: true, answers: ['', ''] })
+    await setup(h.io)
+    expect(h.questions.at(-1)).toBe('Start automatically at login? [Y/n] ')
+    expect(h.installs).toEqual(['install'])
+    expect(h.output()).toContain('Start Claude Code inside tmux and a channel appears.')
+  })
+
+  it('prints the start command instead when the user declines', async () => {
+    const h = harness(happy(), { tty: true, answers: ['', 'n'] })
+    await setup(h.io)
+    expect(h.installs).toEqual([])
+    expect(h.config().userId).toBe(OWNER)
+    expect(h.output()).toContain('claude-code-discord-sync start')
   })
 })

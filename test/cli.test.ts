@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,7 @@ const scratch = mkdtempSync(join(tmpdir(), 'ccds-cli-'))
 const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DISCORD_'))),
   CCDS_NAME: `ccds-test-${process.pid}`, XDG_CONFIG_HOME: scratch, APPDATA: scratch, LOCALAPPDATA: scratch,
+  CLAUDE_DIR: join(scratch, 'claude'),
 }
 const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', env })
 
@@ -43,11 +44,43 @@ describe('cli', () => {
     expect(r.stderr).not.toContain('not available yet')
   })
 
+  it('reports status for a fresh install without printing secrets', () => {
+    const r = run('status')
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Config: not set up')
+    expect(r.stdout).toContain('Token: not stored')
+    expect(r.stdout).toContain('Service: not installed')
+    expect(r.stdout).toMatch(/^tmux: /m)
+    expect(r.stdout).toContain('Sessions: none')
+  })
+
+  it('uninstalls: removes the config folder and says Discord is left alone', () => {
+    const dir = join(scratch, env.CCDS_NAME)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ guildId: '111', userId: '222' }))
+    const r = run('uninstall')
+    expect(r.status, r.stderr).toBe(0)
+    expect(existsSync(dir)).toBe(false)
+    expect(r.stdout).toContain(`Removed the config folder ${dir}`)
+    expect(r.stdout).toContain('No login service was installed.')
+    expect(r.stdout).toContain('Discord')
+  })
+
   it('still asks for setup when the config has ids but no token is stored', () => {
     mkdirSync(join(scratch, env.CCDS_NAME), { recursive: true })
     writeFileSync(join(scratch, env.CCDS_NAME, 'config.json'), JSON.stringify({ guildId: '111', userId: '222' }))
     const r = run('start')
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('claude-code-discord-sync setup')
+  })
+
+  it('start --background returns at once, leaving a detached watcher that logs to LOCALAPPDATA', async () => {
+    const r = run('start', '--background')
+    expect(r.status, r.stderr).toBe(0)
+    // No token in the scratch store, so the detached watcher says so in its log and exits.
+    const log = join(scratch, env.CCDS_NAME, 'watcher.log')
+    const read = () => (existsSync(log) ? readFileSync(log, 'utf8') : '')
+    for (let i = 0; i < 100 && !read().includes('setup'); i++) await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(read()).toContain('claude-code-discord-sync setup')
   })
 })
