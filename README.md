@@ -57,6 +57,7 @@ Requirements:
 - tmux (macOS and Linux). Sessions must run inside tmux to be controlled from Discord. Claude Code sessions outside
   tmux are mirrored read-only; Codex sessions outside tmux aren't mirrored.
 - Claude Code, OpenAI Codex CLI, or both. Codex works on macOS and Linux (including WSL), not on native Windows.
+  The watcher finds each Codex session's folder with `lsof` on macOS (preinstalled) and through `/proc` on Linux.
 
 Upgrading this tool with Homebrew or npm doesn't need setup again: the login service runs the installed
 `claude-code-discord-sync` command, whose path stays the same. The new version starts at your next login, or re-run
@@ -180,8 +181,11 @@ second step. If the options can't be read, the card shows the screen and a hint 
 
 Typing from Discord works only when the watcher can see that Codex is at its prompt. It refuses while Codex is in
 shell mode, while a popup, menu or approval is open, or when it doesn't recognise the screen. A message with any line
-that starts with `!` is refused, because a leading `!` puts Codex into shell mode. `!keys` and `!archive` work as
-they do for Claude.
+that starts with `!` is refused, because a leading `!` puts Codex into shell mode. `!type` works like a plain message,
+only at the prompt, since Codex's approvals take no free text. `!keys` and `!archive` work as they do for Claude.
+
+A message gets ✅ only once Codex has taken it. If Codex keeps it in its composer instead of sending it, for example
+an unknown `/command`, the watcher replies that it wasn't sent, so check the terminal.
 
 Limits:
 
@@ -189,6 +193,8 @@ Limits:
 - With two Codex sessions in the same folder, their output may mix in both channels, and typing into them is refused.
   Approval buttons still work.
 - Codex running outside tmux isn't mirrored.
+- Codex's status line must show its default model · folder row. A custom `/statusline` without it means Codex
+  sessions aren't recognised.
 - Codex isn't supported on native Windows.
 - It never uses Codex's app-server or daemon, and never changes Codex's config.
 

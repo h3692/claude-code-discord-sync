@@ -186,6 +186,20 @@ describe('codexScreen', () => {
     expect(codexScreen(moved)).toEqual({ state: 'waiting', dialog: { ...first, cursor: 2 } })
   })
 
+  it('reads an approval to send input to a named terminal', async () => {
+    const s = codexScreen((await screen('approval_command')).replace('Would you like to run the following command?', 'Would you like to send input to terminal 4821?'))
+    expect(s.state).toBe('waiting')
+    expect(s.dialog?.question).toBe('Would you like to send input to terminal 4821?')
+  })
+
+  it('reads a draft Codex would submit as a shell command as unknown', async () => {
+    const draft = await screen('idle_draft')
+    for (const lead of ['›   !', '› \u3000！', '› \u00a0﹗', '› \n  !']) {
+      expect(codexScreen(draft.replace('› say', lead + 'say'))).toEqual({ state: 'unknown', dialog: null })
+    }
+    expect(codexScreen(draft.replace('› say hi', '› say !hi')).state).toBe('idle')
+  })
+
   it('keeps an approval it cannot parse strictly as waiting, with no dialog', async () => {
     const gap = (await screen('approval_command')).replace('  3. No,', '  4. No,')
     expect(codexScreen(gap)).toEqual({ state: 'waiting', dialog: null })
@@ -218,23 +232,23 @@ describe('parsePanes', () => {
 describe('parseCodexPs', () => {
   it('keeps codex executables that have a terminal, with lstart as printed and comm in full', () => {
     const stdout = [
-      '17099 ttys009  Ss   Sun Nov 15 07:49:22 2026     /bin/zsh',
-      '17325 ttys009  S+   Sun Nov 15 07:49:28 2026     node',
-      '17326 ttys009  S+   Sun Nov 15 07:49:28 2026     /Users/me/.nvm/versions/node/v24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex',
-      '18016 ??       Ss   Sun Nov 15 06:00:01 2026     /Users/me/.codex/packages/app-server-daemon/releases/0.169.0-aarch64-apple-darwin/bin/codex',
-      '30719 ??       S    Sun Nov 15 06:00:02 2026     /Users/me/.codex/packages/app-server-daemon/releases/0.169.0-aarch64-apple-darwin/bin/codex-code-mode-host',
-      '43008 ttys013  T    Sun Nov  5 07:58:43 2026     /opt/homebrew/bin/codex',
-      '44179 ttys013  S    Sun Nov 15 07:59:08 2026     npm exec shadcn@latest mcp',
-      ' 4321 pts/3    Sl+  Sun Nov 15 07:59:08 2026     codex',
-      '  999 ?        Ss   Sun Nov 15 07:59:08 2026     codex',
-      ' 1000 ttys001  S    Sun Nov 15 07:59:08 2026     /Applications/My Tools/codex',
+      '17099 ttys009  Sun Nov 15 07:49:22 2026     /bin/zsh',
+      '17325 ttys009  Sun Nov 15 07:49:28 2026     node',
+      '17326 ttys009  Sun Nov 15 07:49:28 2026     /Users/me/.nvm/versions/node/v24.21.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex',
+      '18016 ??       Sun Nov 15 06:00:01 2026     /Users/me/.codex/packages/app-server-daemon/releases/0.169.0-aarch64-apple-darwin/bin/codex',
+      '30719 ??       Sun Nov 15 06:00:02 2026     /Users/me/.codex/packages/app-server-daemon/releases/0.169.0-aarch64-apple-darwin/bin/codex-code-mode-host',
+      '43008 ttys013  Sun Nov  5 07:58:43 2026     /opt/homebrew/bin/codex',
+      '44179 ttys013  Sun Nov 15 07:59:08 2026     npm exec shadcn@latest mcp',
+      ' 4321 pts/3    Sun Nov 15 07:59:08 2026     codex',
+      '  999 ?        Sun Nov 15 07:59:08 2026     codex',
+      ' 1000 ttys001  Sun Nov 15 07:59:08 2026     /Applications/My Tools/codex',
       'garbage',
     ].join('\n')
     expect(parseCodexPs(stdout)).toEqual([
-      { pid: 17326, tty: 'ttys009', stat: 'S+', lstart: 'Sun Nov 15 07:49:28 2026' },
-      { pid: 43008, tty: 'ttys013', stat: 'T', lstart: 'Sun Nov  5 07:58:43 2026' },
-      { pid: 4321, tty: 'pts/3', stat: 'Sl+', lstart: 'Sun Nov 15 07:59:08 2026' },
-      { pid: 1000, tty: 'ttys001', stat: 'S', lstart: 'Sun Nov 15 07:59:08 2026' },
+      { pid: 17326, tty: 'ttys009', lstart: 'Sun Nov 15 07:49:28 2026' },
+      { pid: 43008, tty: 'ttys013', lstart: 'Sun Nov  5 07:58:43 2026' },
+      { pid: 4321, tty: 'pts/3', lstart: 'Sun Nov 15 07:59:08 2026' },
+      { pid: 1000, tty: 'ttys001', lstart: 'Sun Nov 15 07:59:08 2026' },
     ])
   })
 })
@@ -337,7 +351,7 @@ describe('listCodexSessions', () => {
         if (s === undefined) throw new Error("can't find pane")
         return s
       }
-      if (file === 'ps') return procs.map((p) => `${String(p.pid).padStart(5)} ${p.tty.padEnd(8)} S+   ${START}     ${p.comm ?? '/opt/homebrew/bin/codex'}\n`).join('')
+      if (file === 'ps') return procs.map((p) => `${String(p.pid).padStart(5)} ${p.tty.padEnd(8)} ${START}     ${p.comm ?? '/opt/homebrew/bin/codex'}\n`).join('')
       if (file === 'lsof') {
         const pids = args[args.indexOf('-p') + 1].split(',').map(Number)
         return procs.filter((p) => pids.includes(p.pid)).map((p) => `p${p.pid}\nfcwd\nn${p.cwd}\n`).join('')
@@ -594,7 +608,7 @@ describe.skipIf(process.platform === 'win32' || !has('tmux', '-V') || (process.p
       const sh = (cmd: string) => { try { return execFileSync('sh', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }) } catch (e) { return `ERR ${(e as Error).message}` } }
       console.error([
         tmux('list-panes', '-a', '-F', '#{pane_id} #{pane_tty} #{pane_pid}'),
-        sh(`ps -A -o pid=,tty=,stat=,lstart=,comm= | grep -v ' ??' | tail -n 40`),
+        sh(`ps -A -o pid=,tty=,lstart=,comm= | grep -v ' ??' | tail -n 40`),
         sh(`lsof -a -p ${pid} -d cwd -Fn`),
         tmux('capture-pane', '-p', '-J', '-t', pane),
       ].join('\n---\n'))

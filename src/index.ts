@@ -8,7 +8,7 @@ import {
 } from 'discord.js'
 import type { ButtonInteraction, CategoryChannel, Guild, TextChannel } from 'discord.js'
 import { appName, configDirFor, powershell, run } from './config.ts'
-import { codexScreen, header as rolloutHeader, listCodexSessions, parseCodexLine, seedRecognised } from './codex.ts'
+import { codexComposer, codexScreen, header as rolloutHeader, listCodexSessions, parseCodexLine, seedRecognised } from './codex.ts'
 import type { CodexMeta } from './codex.ts'
 import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, SHELL, step, topicFor } from './mirror.ts'
 import type { Action, Button, Input, State } from './mirror.ts'
@@ -129,20 +129,30 @@ export function typingRefusal(a: Typing, status: string | null, freshHash: strin
 // picks the highlighted item, or the shell mode a leading `!` turns on, so each check refuses rather than guesses.
 // !type (allowWaiting) goes through here too: Codex's approvals take no free text.
 export async function typeCodex(text: string, ambiguous: boolean, io: {
-  state: () => Promise<string | null>; checkPane: () => Promise<string | null>; paste: () => Promise<void>; enter: () => Promise<void>
+  state: () => Promise<{ state: string | null; screen: string | null }>; checkPane: () => Promise<string | null>; paste: () => Promise<void>
+  enter: () => Promise<void>
 }): Promise<string | null> {
   if (ambiguous) return 'two Codex sessions share this folder; reply in the terminal'
   if (sanitizePaste(text).split('\n').some((l) => SHELL.test(l.replace(/^[\s\p{Cf}]+/u, '')))) {
     return 'a line starts with `!`, which Codex would run as a shell command'
   }
   const first = await io.state()
-  if (first !== 'idle') return first === 'waiting' ? 'a prompt is open — use the buttons or `!keys`' : "can't confirm Codex is at its prompt"
+  if (first.state !== 'idle') return first.state === 'waiting' ? 'a prompt is open — use the buttons or `!keys`' : "can't confirm Codex is at its prompt"
   const pane = await io.checkPane()
   if (pane) return pane
   await io.paste()
   // The paste itself can open a popup (`@word`, `/`), where Enter would pick an item instead of sending.
-  if ((await io.state()) !== 'idle') return "pasted but not sent — Codex isn't at its prompt; check the terminal"
+  const pasted = await io.state()
+  if (pasted.state !== 'idle') return "pasted but not sent — Codex isn't at its prompt; check the terminal"
+  // A stale frame or a composer that dropped the paste still reads idle; only a changed composer shows the text landed.
+  const draft = codexComposer(pasted.screen ?? '')
+  if (draft === codexComposer(first.screen ?? '')) return "pasted but not sent — Codex didn't take the text; check the terminal"
   await io.enter()
+  // Codex keeps text it won't submit (an unrecognised /command) in the composer. Any other screen counts as sent.
+  const after = await io.state()
+  if (after.state === 'idle' && codexComposer(after.screen ?? '') === draft) {
+    return 'Codex kept the message in its composer instead of sending it — check the terminal'
+  }
   return null
 }
 
@@ -412,14 +422,20 @@ export function main({ token, guildId, userId, claudeDir, codexHome, ttl }: Sett
       let reason: string | null
       if (codex && a.type === 'paste') {
         reason = await typeCodex(a.text, e.ambiguous, {
-          state: async () => (await readScreen(e)).status,
+          state: async () => {
+            const { status, screen } = await readScreen(e)
+            return { state: status, screen }
+          },
           checkPane: () => checkPane(pane, e.pid, e.procStart),
           paste: async () => {
             await pasteText(pane, a.text, undefined, false)
             // Codex redraws after the paste; a capture before that would miss a popup the paste opened.
             await new Promise((r) => setTimeout(r, 300))
           },
-          enter: () => sendKeys(pane, ['Enter']),
+          enter: async () => {
+            await sendKeys(pane, ['Enter'])
+            await new Promise((r) => setTimeout(r, 300))
+          },
         }).catch((err) => err.message)
       } else {
         const { status, dialog } = await readScreen(e)

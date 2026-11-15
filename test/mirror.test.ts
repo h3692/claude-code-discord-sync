@@ -772,6 +772,13 @@ describe('step: Codex', () => {
     expect(d.actions).toEqual([])
   })
 
+  it('leaves `!type` out of the hint, since Codex refuses it while a prompt is open', () => {
+    const gap = cscreen('approval_command').replace('  3. No,', '  4. No,')
+    const { actions } = step(codex().state, { kind: 'status', status: 'waiting', screen: gap })
+    expect((actions[0] as { embed: { description: string } }).embed.description)
+      .toMatch(/\n-# Can't read the options reliably — reply with `!keys 2` or `!keys Down Enter`$/)
+  })
+
   it('answers with the digit only, never Enter', () => {
     const a = cstatus(codex().state, 'waiting', 'approval_command')
     const hash = codexScreen(cscreen('approval_command')).dialog!.hash

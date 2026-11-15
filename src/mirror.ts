@@ -55,6 +55,8 @@ export type Input =
 const TOPIC = /^ccds\|(\d+)\|([^|]+)(\|archive)?(?:\|ended:(\d+))?$/
 const EMBED_MAX = 4096
 const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!keys Down Enter` or `!type your answer`"
+// Codex takes no free text while a prompt is open, so `!type` is always refused there.
+const CODEX_HINT = "\n-# Can't read the options reliably — reply with `!keys 2` or `!keys Down Enter`"
 const NO_TMUX = "Claude is waiting for you, but this session isn't in tmux — answer at the terminal."
 const NO_SCREEN = "Claude is waiting for you, but the screen couldn't be read — answer at the terminal, or try `!keys`."
 const CLOSED = 'That prompt is no longer open.'
@@ -263,14 +265,15 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       let embed = { title: renderCard('', agent).title, description: s.pane ? NO_SCREEN : NO_TMUX }
       if (input.screen) embed = renderCard(input.screen, agent)
       if (input.screen && !dialog) {
-        const over = embed.description.length + HINT.length - EMBED_MAX
+        const hint = s.provider === 'codex' ? CODEX_HINT : HINT
+        const over = embed.description.length + hint.length - EMBED_MAX
         if (over > 0) {
           // Drop whole lines from the top of the fenced screen to make room for the hint.
           const body = embed.description.slice(4, -4)
           const nl = body.indexOf('\n', over + 2)
           embed.description = `\`\`\`\n…${nl === -1 ? '' : body.slice(nl)}\n\`\`\``
         }
-        embed.description += HINT
+        embed.description += hint
       }
       const shown = input.screen ? screenHash(input.screen) : null
       let retry = false

@@ -100,18 +100,28 @@ const APPROVAL_TITLES = new Set([
   'Would you like to run the following command?', 'Would you like to make the following edits?',
   'Would you like to grant these permissions?', 'Would you like to send input to the existing terminal?',
 ])
-const APPROVAL_TITLE = /^(Do you want to approve network access to .+|\S.* needs your approval\.)$/
+const APPROVAL_TITLE = /^(Do you want to approve network access to .+|\S.* needs your approval\.|Would you like to send input to terminal \S+\?)$/
 const CODEX_OPTION = /^(›| ) (\d+)\. (.+)$/
 // The key hint after a label: (y), (p), (a), (esc).
 const SHORTCUT = /\s+\((?:[a-z]|esc)\)$/
 // Below the composer: `  <model> <effort> · <cwd>[ · <title>]`, then a hint row that is blank while drafting or in a popup.
 const STATUS = /^  \S.* · \S/
 const HINT = /^ *(← for agents · )?(\? for shortcuts|tab to queue message)?( +⚠ \d+ warnings? · f2 to view)? *$/
+// Codex trims a draft's start on submit, so whitespace (Rust's, which adds U+0085) before a `!` still runs it in the shell.
+const SHELL_DRAFT = /^[\s\u0085]*[!！﹗]/u
 
 // Decides whether the app may type into a Codex pane, so anything not positively recognised is unknown.
 export function codexScreen(screen: string): { state: 'waiting' | 'idle' | 'unknown'; dialog: Dialog | null } {
   const lines = screen.replace(/\n$/, '').split('\n')
-  return approval(lines) ?? (idle(lines) ? { state: 'idle', dialog: null } : { state: 'unknown', dialog: null })
+  const rows = composer(lines)
+  const idle = rows && !SHELL_DRAFT.test(rows.map((l) => l.slice(2)).join('\n'))
+  return approval(lines) ?? (idle ? { state: 'idle', dialog: null } : { state: 'unknown', dialog: null })
+}
+
+// The composer rows of a screen at the prompt, joined; null when it isn't there. Unlike the whole screen, a spinner or
+// timer doesn't change them.
+export function codexComposer(screen: string): string | null {
+  return composer(screen.replace(/\n$/, '').split('\n'))?.join('\n') ?? null
 }
 
 function approval(lines: string[]): { state: 'waiting'; dialog: Dialog | null } | null {
@@ -141,18 +151,19 @@ function approval(lines: string[]): { state: 'waiting'; dialog: Dialog | null } 
 
 // Bottom up: hint row, status row, a blank row, the composer (`› ` then indented continuation rows), two blank rows.
 // The two blank rows are what tell a draft from a popup, which sits right above the composer when the hint row is blank.
-function idle(lines: string[]): boolean {
+// Returns the composer rows, or null when the bottom of the screen isn't the prompt.
+function composer(lines: string[]): string[] | null {
   const n = lines.length
-  if (n < 6 || !HINT.test(lines[n - 1]) || !STATUS.test(lines[n - 2]) || HINT.test(lines[n - 2]) || lines[n - 3].trim()) return false
+  if (n < 6 || !HINT.test(lines[n - 1]) || !STATUS.test(lines[n - 2]) || HINT.test(lines[n - 2]) || lines[n - 3].trim()) return null
   let top = n - 4
   while (top >= 0 && lines[top].startsWith('  ') && lines[top].trim()) top--
-  return top >= 2 && lines[top].startsWith('› ') && !lines[top - 1].trim() && !lines[top - 2].trim()
+  return top >= 2 && lines[top].startsWith('› ') && !lines[top - 1].trim() && !lines[top - 2].trim() ? lines.slice(top, n - 3) : null
 }
 
 const exec = promisify(execFile)
 const PANE = /^%\d+$/
-// pid, tty, stat, lstart (as ps prints it in the C locale), then comm, last so ps doesn't cut it to 16 characters.
-const PS_LINE = /^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/
+// pid, tty, lstart (as ps prints it in the C locale), then comm, last so ps doesn't cut it to 16 characters.
+const PS_LINE = /^\s*(\d+)\s+(\S+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.+)$/
 // tmux says "no server running" for a socket nobody listens on and "error connecting to … (No such file or directory)"
 // when the server never started; any other connect error (permissions, a stale non-socket) is a failure.
 const NO_SERVER = /no server running|error connecting to .*\(No such file or directory\)/
@@ -179,11 +190,11 @@ export function parsePanes(stdout: string): Map<string, string> {
 }
 
 // Codex executables with a terminal; the app-server daemon has none (??), and the npm wrapper is node.
-export function parseCodexPs(stdout: string): { pid: number; tty: string; stat: string; lstart: string }[] {
+export function parseCodexPs(stdout: string): { pid: number; tty: string; lstart: string }[] {
   return stdout.split('\n').flatMap((line) => {
     const m = PS_LINE.exec(line)
-    if (!m || basename(m[5].trim()) !== 'codex' || /^(\?+|-)$/.test(m[2])) return []
-    return [{ pid: Number(m[1]), tty: m[2], stat: m[3], lstart: m[4] }]
+    if (!m || basename(m[4].trim()) !== 'codex' || /^(\?+|-)$/.test(m[2])) return []
+    return [{ pid: Number(m[1]), tty: m[2], lstart: m[3] }]
   })
 }
 
@@ -306,7 +317,7 @@ export async function listCodexSessions(
       return []
     }
     const panes = parsePanes(panesOut)
-    const procs = parseCodexPs(await run('ps', ['-A', '-o', 'pid=,tty=,stat=,lstart=,comm=']))
+    const procs = parseCodexPs(await run('ps', ['-A', '-o', 'pid=,tty=,lstart=,comm=']))
     const tuis = procs.filter((p) => panes.has(p.tty))
     const live = new Set(tuis.map((p) => `${p.pid}|${p.lstart}`))
     for (const k of recognised) if (!live.has(k)) recognised.delete(k)

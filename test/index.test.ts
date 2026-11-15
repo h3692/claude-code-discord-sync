@@ -319,7 +319,9 @@ describe('freshEvents for Codex', () => {
 })
 
 describe('typeCodex', () => {
-  function io(states: string[], pane: string | null = null, fail = false) {
+  const at = (state: string, name?: string) => ({ state, screen: name ? readFileSync(new URL(`./fixtures/codex/screens/${name}.txt`, import.meta.url), 'utf8') : null })
+  const sent = () => [at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_empty')]
+  function io(states: { state: string; screen: string | null }[], pane: string | null = null, fail = false) {
     const calls: string[] = []
     return {
       calls,
@@ -335,50 +337,70 @@ describe('typeCodex', () => {
     }
   }
 
-  it('checks the screen and the pane, pastes, checks the screen again, and only then presses Enter', async () => {
-    const t = io(['idle', 'idle'])
+  it('checks the screen and the pane, pastes, sees the composer change, presses Enter, then sees it cleared', async () => {
+    const t = io(sent())
     expect(await typeCodex('hello\nworld', false, t.io)).toBeNull()
-    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter'])
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state'])
   })
 
   it('refuses before touching the pane when two Codex sessions share the folder', async () => {
-    const t = io(['idle', 'idle'])
+    const t = io(sent())
     expect(await typeCodex('hello', true, t.io)).toBe('two Codex sessions share this folder; reply in the terminal')
     expect(t.calls).toEqual([])
   })
 
   it.each(['!ls', 'fine\n!rm -rf ~', 'fine\n   !ls', 'fine\n\u200b!ls', 'fine\n！ls', 'fine\r\n!ls', 'fine\n\x01!ls'])(
     'refuses %j, since a line starting with ! would run as a shell command', async (text) => {
-      const t = io(['idle', 'idle'])
+      const t = io(sent())
       expect(await typeCodex(text, false, t.io)).toMatch(/starts with `!`/)
       expect(t.calls).toEqual([])
     })
 
   it('refuses unless the first capture shows the prompt', async () => {
-    const unknown = io(['unknown'])
+    const unknown = io([at('unknown')])
     expect(await typeCodex('hello', false, unknown.io)).toBe("can't confirm Codex is at its prompt")
     expect(unknown.calls).toEqual(['state'])
-    const waiting = io(['waiting'])
+    const waiting = io([at('waiting', 'approval_command')])
     expect(await typeCodex('hello', false, waiting.io)).toBe('a prompt is open — use the buttons or `!keys`')
     expect(waiting.calls).toEqual(['state'])
   })
 
   it('refuses when the pane check fails, before pasting', async () => {
-    const t = io(['idle'], 'Claude Code is suspended (Ctrl-Z)')
+    const t = io(sent(), 'Claude Code is suspended (Ctrl-Z)')
     expect(await typeCodex('hello', false, t.io)).toBe('Claude Code is suspended (Ctrl-Z)')
     expect(t.calls).toEqual(['state', 'checkPane'])
   })
 
   it('leaves Enter unpressed when the screen changed after the paste (a popup opened)', async () => {
-    for (const second of ['unknown', 'waiting']) {
-      const t = io(['idle', second])
+    for (const second of [at('unknown', 'popup_file'), at('waiting', 'approval_command')]) {
+      const t = io([at('idle', 'idle_empty'), second])
       expect(await typeCodex('look at @src', false, t.io)).toBe("pasted but not sent — Codex isn't at its prompt; check the terminal")
       expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state'])
     }
   })
 
+  it('leaves Enter unpressed when the composer looks the same after the paste (the text never landed)', async () => {
+    // The status row differs, but only the composer counts.
+    const after = at('idle', 'idle_draft')
+    after.screen = after.screen!.replace('· /tmp/project', '· /tmp/project · Reply with pong')
+    const t = io([at('idle', 'idle_draft'), after])
+    expect(await typeCodex('hello', false, t.io)).toBe("pasted but not sent — Codex didn't take the text; check the terminal")
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state'])
+  })
+
+  it('reports a message Codex kept in its composer after Enter, so it is not marked sent', async () => {
+    const t = io([at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_draft')])
+    expect(await typeCodex('/foo bar', false, t.io)).toBe('Codex kept the message in its composer instead of sending it — check the terminal')
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state'])
+  })
+
+  it('counts a message as sent when Enter leaves the prompt (an approval opened)', async () => {
+    const t = io([at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('waiting', 'approval_command')])
+    expect(await typeCodex('hello', false, t.io)).toBeNull()
+  })
+
   it('passes a failed paste on, without pressing Enter', async () => {
-    const t = io(['idle', 'idle'], null, true)
+    const t = io(sent(), null, true)
     await expect(typeCodex('hello', false, t.io)).rejects.toThrow(/load-buffer/)
     expect(t.calls).toEqual(['state', 'checkPane', 'paste'])
   })
