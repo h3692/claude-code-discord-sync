@@ -455,6 +455,16 @@ describe.skipIf(process.platform === 'win32' || !has('tmux', '-V') || !has('lsof
       await new Promise((r) => setTimeout(r, 50))
       list = await listCodexSessions(home, [], (...a) => console.error(...a))
     }
+    if (!list.length) {
+      // Say which discovery input differed, so a failure on another OS is diagnosable from the CI log.
+      const sh = (cmd: string) => { try { return execFileSync('sh', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }) } catch (e) { return `ERR ${(e as Error).message}` } }
+      console.error([
+        tmux('list-panes', '-a', '-F', '#{pane_id} #{pane_tty} #{pane_pid}'),
+        sh(`ps -A -o pid=,tty=,stat=,lstart=,comm= | grep -v ' ??' | tail -n 40`),
+        sh(`lsof -a -p ${pid} -d cwd -Fn`),
+        tmux('capture-pane', '-p', '-J', '-t', pane),
+      ].join('\n---\n'))
+    }
     const procStart = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).trim()
     expect(list).toEqual([{
       pid, procStart: expect.stringMatching(/\S/), sessionId: 't9', cwd: work, name: '', status: 'idle', interactive: true, pane,
