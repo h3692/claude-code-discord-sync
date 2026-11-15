@@ -247,6 +247,17 @@ describe('Windows typing', () => {
   })
 })
 
+describe.skipIf(process.platform === 'win32')('checkPane failures', () => {
+  it('reports only the first line of a failed command', async () => {
+    const env = { ...process.env, LC_ALL: 'C', TZ: 'UTC' }
+    const start = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', env })
+    // No server on the guard socket, so tmux fails with "Command failed: ..." plus its stderr on the next line.
+    const why = await checkPane('%1', process.pid, start, process.platform)
+    expect(why).toMatch(/^pane check failed: /)
+    expect(why).not.toContain('\n')
+  })
+})
+
 const hasTmux = (() => {
   try {
     execFileSync('tmux', ['-V'])

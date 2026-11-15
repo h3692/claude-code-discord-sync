@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { configDirFor, promptHidden, readConfig, readToken, writeConfig, writeToken } from './config.ts'
+import type { Config } from './config.ts'
 import { installService } from './service.ts'
 
 export type Guild = { id: string; name: string; permissions: string; approximate_member_count?: number }
@@ -115,7 +116,12 @@ const real: Io = {
 
 export async function setup(over: Partial<Io> = {}): Promise<void> {
   const io = { ...real, ...over }
-  const config = readConfig(io.configPath)
+  let config: Config = {}
+  try {
+    config = readConfig(io.configPath)
+  } catch {
+    io.log(`Warning: ignoring the unreadable ${io.configPath}; setup will write a new one.`)
+  }
   let token = ''
   // Errors name the request and status only; the token never goes into a message.
   const api = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
@@ -157,7 +163,9 @@ export async function setup(over: Partial<Io> = {}): Promise<void> {
   for (const problem of preflight(process.platform, process.versions.node, io.hasTmux())) io.log(`Warning: ${problem}`)
 
   // 2. Existing token. Discord shows a token once, so a working one is never replaced unasked.
-  token = io.readToken() ?? ''
+  // Without a terminal stdin is read first: a token piped there is the ask, and replaces the stored one.
+  const piped = io.tty ? '' : await io.askHidden('Paste the bot token (hidden): ')
+  token = piped ? '' : io.readToken() ?? ''
   let bot = token ? await me() : null
   if (token && !bot) io.log('The stored bot token no longer works.')
   if (bot && !(await confirm(`Keep the existing bot ${bot.username}? [Y/n] `, true))) bot = null
@@ -171,7 +179,7 @@ export async function setup(over: Partial<Io> = {}): Promise<void> {
     io.log('  2. Bot → Reset Token → Copy.')
   }
   while (!bot) {
-    token = await io.askHidden('Paste the bot token (hidden): ')
+    token = io.tty ? await io.askHidden('Paste the bot token (hidden): ') : piped
     bot = await me()
     if (bot) break
     const why = TOKEN.test(token) ? 'Discord rejected that token.' : "That doesn't look like a bot token."
@@ -183,24 +191,32 @@ export async function setup(over: Partial<Io> = {}): Promise<void> {
   if (fresh) io.writeToken(token)
   let app = await api<App>('GET', '/applications/@me')
 
-  // 5. Who may type.
+  // 5. Who may type: the user chosen last time, else the app's owner.
   const owner = ownerOf(app)
   const who = owner.name ? `${owner.name} (${owner.id})` : owner.id
-  if (owner.team && !io.tty) throw new Error('This app belongs to a team, so who may type is ambiguous. Run setup in a terminal to choose.')
-  let userId = (await confirm(
-    owner.team ? `This app belongs to a team. Let its owner ${who} type into sessions? [y/N] ` : `Only ${who} may type into sessions from Discord. OK? [Y/n] `,
-    !owner.team,
-  )) ? owner.id : ''
+  const lookup = (id: string) => api<User>('GET', `/users/${id}`).catch((e) => {
+    if (statusOf(e) === undefined) throw e
+    return null
+  })
+  let userId = ''
+  if (USER_ID.test(config.userId ?? '')) {
+    const kept = io.tty ? await lookup(config.userId!) : null
+    if (!io.tty || (kept && (await confirm(`Keep ${kept.username} as the only user who can type? [Y/n] `, true)))) userId = config.userId!
+  }
+  if (!userId) {
+    if (owner.team && !io.tty) throw new Error('This app belongs to a team, so who may type is ambiguous. Run setup in a terminal to choose.')
+    userId = (await confirm(
+      owner.team ? `This app belongs to a team. Let its owner ${who} type into sessions? [y/N] ` : `Only ${who} may type into sessions from Discord. OK? [Y/n] `,
+      !owner.team,
+    )) ? owner.id : ''
+  }
   while (!userId) {
     const id = (await io.ask('Discord user ID who may type: ')).trim()
     if (!USER_ID.test(id)) {
       io.log('A user ID is 17 to 20 digits. In Discord: Settings → Advanced → Developer Mode, then right-click the name → Copy User ID.')
       continue
     }
-    const user = await api<User>('GET', `/users/${id}`).catch((e) => {
-      if (statusOf(e) === undefined) throw e
-      return null
-    })
+    const user = await lookup(id)
     if (!user) io.log('No Discord account has that ID.')
     else if (await confirm(`That is ${user.username}. Let them type? [Y/n] `, true)) userId = id
   }

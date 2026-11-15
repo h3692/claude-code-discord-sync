@@ -1,9 +1,10 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { commandLine, isWatcherCommand, lockDirFor } from '../src/index.ts'
 
 const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url))
 // A throwaway name and folders, so start never finds the real config or the real Keychain item.
@@ -91,5 +92,43 @@ describe('cli', () => {
     const read = () => (existsSync(log) ? readFileSync(log, 'utf8') : '')
     for (let i = 0; i < 100 && !read().includes('setup'); i++) await new Promise((resolve) => setTimeout(resolve, 100))
     expect(read()).toContain('claude-code-discord-sync setup')
+  })
+
+  it('start and status name a broken config file and exit 1, without a stack trace', () => {
+    const path = join(scratch, env.CCDS_NAME, 'config.json')
+    mkdirSync(join(scratch, env.CCDS_NAME), { recursive: true })
+    for (const text of ['{"guildId": ', 'null']) {
+      writeFileSync(path, text)
+      for (const command of ['start', 'status']) {
+        const r = run(command)
+        expect(r.status, `${command} ${text}`).toBe(1)
+        expect(r.stderr.trim()).toBe(`${path} is not valid JSON — fix it or re-run setup`)
+      }
+    }
+    rmSync(path)
+  })
+
+  it('start does not read the config when all three DISCORD_* variables are set', async () => {
+    mkdirSync(join(scratch, env.CCDS_NAME), { recursive: true })
+    writeFileSync(join(scratch, env.CCDS_NAME, 'config.json'), 'null')
+    // A stand-in watcher holds the lock, so start stops there instead of logging in to Discord.
+    const held = { ...env, HOME: scratch, USERPROFILE: scratch }
+    const lockDir = lockDirFor(process.platform, held, scratch)
+    const stand = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', cli, 'start'], { stdio: 'ignore' })
+    try {
+      for (let i = 0; i < 50 && !isWatcherCommand(commandLine(stand.pid!)); i++) await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(isWatcherCommand(commandLine(stand.pid!))).toBe(true)
+      mkdirSync(lockDir, { recursive: true })
+      writeFileSync(join(lockDir, `${env.CCDS_NAME}.lock`), String(stand.pid))
+      const r = spawnSync(process.execPath, [cli, 'start'], {
+        encoding: 'utf8', timeout: 20_000,
+        env: { ...held, DISCORD_BOT_TOKEN: 'x', DISCORD_GUILD_ID: '111', DISCORD_USER_ID: '222' },
+      })
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('Another instance is running')
+    } finally {
+      stand.kill()
+      rmSync(join(scratch, env.CCDS_NAME, 'config.json'))
+    }
   })
 })

@@ -41,10 +41,10 @@ brew install h3692/tap/claude-code-discord-sync
 **npm** (anywhere with Node 24.12 or later):
 
 ```sh
-npm install -g https://github.com/h3692/claude-code-discord-sync/releases/latest/download/claude-code-discord-sync.tgz
+npm install -g --allow-remote=all https://github.com/h3692/claude-code-discord-sync/releases/latest/download/claude-code-discord-sync.tgz
 ```
 
-If npm refuses the URL, add `--allow-remote=all` (newer npm versions may ask for it; not yet confirmed).
+`--allow-remote=all` lets npm install from a URL; newer npm versions refuse without it.
 
 Requirements:
 
@@ -53,8 +53,10 @@ Requirements:
   mirrored read-only.
 - Claude Code
 
-If you use nvm, a global npm install belongs to the Node version that was active when you installed it, and the
-login service runs that Node. After switching versions, install again and re-run `claude-code-discord-sync setup`.
+Upgrading this tool with Homebrew or npm doesn't need setup again: the login service runs the installed
+`claude-code-discord-sync` command, whose path stays the same. Switching Node versions with nvm does. A global npm
+install belongs to the Node version that was active when you installed it, and the login service runs that copy.
+After switching versions, install again and re-run `claude-code-discord-sync setup`.
 `claude-code-discord-sync status` tells you if the Node the service runs has gone missing.
 
 ### Windows
@@ -219,6 +221,11 @@ Setup covers everything most people need. These environment variables change the
 | `TMUX_SOCKET_NAME` | | tmux socket name (as in `tmux -L <name>`), to use instead of the default server. |
 | `CCDS_NAME` | `claude-code-discord-sync` | Names the config folder, the stored secret and the login service. Set it to run a second, isolated copy. |
 | `CCDS_WINDOWS_TYPING` | | Set to `1` to allow typing on native Windows. |
+
+The login service gets only `CCDS_NAME`, `CLAUDE_DIR` and `XDG_CONFIG_HOME` from the environment setup ran in; the
+other variables apply when you run `claude-code-discord-sync start` yourself. On Windows, the watcher started at
+login sees only your persistent user variables, so set `CCDS_WINDOWS_TYPING` with `setx CCDS_WINDOWS_TYPING 1`,
+then sign out and back in (or run `claude-code-discord-sync start` by hand from a new terminal).
 
 ## FAQ
 

@@ -47,6 +47,14 @@ describe('readConfig / writeConfig', () => {
     expect(readConfig(path)).toEqual({ guildId: '111', userId: '222' })
   })
 
+  it('refuses a file that is not a JSON object with a message naming it', () => {
+    const path = join(scratch(), 'config.json')
+    for (const text of ['{"guildId": ', 'null', '[]', '"x"', '1', '']) {
+      writeFileSync(path, text)
+      expect(() => readConfig(path), text).toThrow(`${path} is not valid JSON — fix it or re-run setup`)
+    }
+  })
+
   it.skipIf(process.platform === 'win32')('writes the file 0600', () => {
     const path = join(scratch(), 'config.json')
     writeConfig(path, { guildId: '111' })

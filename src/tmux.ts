@@ -181,7 +181,8 @@ export async function checkPane(
     if (inMode !== '0') return 'tmux pane is in copy mode'
     return null
   } catch (e) {
-    return `pane check failed: ${(e as Error).message}`
+    // tmux and PowerShell append their stderr on further lines.
+    return `pane check failed: ${(e as Error).message.split(/\r?\n/)[0]}`
   }
 }
 

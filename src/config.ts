@@ -20,12 +20,19 @@ export function configDirFor(platform: string, env: Env, home: string): string {
 }
 
 export function readConfig(path: string): Config {
+  let text: string
   try {
-    return JSON.parse(readFileSync(path, 'utf8'))
+    text = readFileSync(path, 'utf8')
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {}
     throw e
   }
+  let config: unknown
+  try {
+    config = JSON.parse(text)
+  } catch {}
+  if (typeof config !== 'object' || !config || Array.isArray(config)) throw new Error(`${path} is not valid JSON — fix it or re-run setup`)
+  return config as Config
 }
 
 export function writeConfig(path: string, config: Config): void {

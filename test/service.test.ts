@@ -178,8 +178,10 @@ describe('serviceFor win32', () => {
   it('stops a running watcher before starting the new one, and on uninstall', () => {
     const s = serviceFor('win32', { ...win, watcher: 4242 })
     const kill = { file: 'taskkill', args: ['/PID', '4242', '/F'], mayFail: true }
-    expect(s.install.map((c) => c.file)).toEqual(['reg', 'taskkill', win.node])
+    expect(s.install.map((c) => c.file)).toEqual(['reg', 'taskkill', win.node, win.node])
     expect(s.install[1]).toEqual(kill)
+    // taskkill /F returns before the old watcher is gone, and the new one would find its lock held.
+    expect(s.install[2]).toEqual({ file: win.node, args: ['-e', 'process.kill(4242, 0)'], untilFails: true })
     expect(s.uninstall).toEqual([{ file: 'reg', args: ['delete', RUN, '/v', 'claude-code-discord-sync', '/f'], mayFail: true }, kill])
   })
 
@@ -212,6 +214,15 @@ describe('runSteps', () => {
     const sleeps: number[] = []
     expect(runSteps(steps, () => {}, exec, (ms) => sleeps.push(ms))).toBe(true)
     expect(calls).toEqual(['bootout', 'print', 'print', 'print', 'bootstrap'])
+    expect(sleeps).toEqual([200, 200])
+  })
+
+  it('on Windows, waits for the killed watcher to exit before starting the new one', () => {
+    const win = { ...mac, node: 'C:\\node.exe', cli: 'C:\\cli.js', home: 'C:\\Users\\me', watcher: 4242 }
+    const { calls, exec } = fake({ '-e': [true, true, false] })
+    const sleeps: number[] = []
+    expect(runSteps(serviceFor('win32', win).install, () => {}, exec, (ms) => sleeps.push(ms))).toBe(true)
+    expect(calls).toEqual(['add', '/PID', '-e', '-e', '-e', win.cli])
     expect(sleeps).toEqual([200, 200])
   })
 

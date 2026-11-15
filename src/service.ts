@@ -102,6 +102,8 @@ ${vars.map(([k, v]) => `		<key>${k}</key>\n		<string>${xml(v)}</string>\n`).join
       install: [
         { file: 'reg', args: ['add', RUN_KEY, '/v', name, '/t', 'REG_SZ', '/d', `"${node}" "${cli}" start --background`, '/f'] },
         ...kill,
+        // taskkill returns before the process is gone; until then the new watcher would find the lock held and exit.
+        ...(watcher ? [{ file: node, args: ['-e', `process.kill(${watcher}, 0)`], untilFails: true as const }] : []),
         { file: node, args: [cli, 'start', '--background'] },
       ],
       uninstall: [{ file: 'reg', args: ['delete', RUN_KEY, '/v', name, '/f'], mayFail: true }, ...kill],

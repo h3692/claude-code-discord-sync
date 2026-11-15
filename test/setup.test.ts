@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -203,11 +203,46 @@ describe('setup (non-TTY)', () => {
     expect(h.config()).toEqual({})
   })
 
-  it('keeps a stored token that still works, without asking for one', async () => {
-    const h = harness(happy(), { readToken: () => fake, hidden: [] })
+  it('keeps a stored token that still works when nothing is piped', async () => {
+    const h = harness(happy(), { readToken: () => fake, hidden: [''] })
     await setup(h.io)
     expect(h.saved).toEqual([])
     expect(h.config().userId).toBe(OWNER)
+  })
+
+  it('replaces a stored token that still works with one piped on stdin', async () => {
+    const stored = 'stored.token-111'
+    const h = harness(happy({ 'GET /users/@me': (_: unknown, auth: string) => me(auth === `Bot ${stored}` ? `Bot ${fake}` : auth) }), {
+      readToken: () => stored,
+    })
+    await setup(h.io)
+    expect(h.saved).toEqual([fake])
+    expect(h.calls.every((c) => c.auth === `Bot ${fake}`)).toBe(true)
+  })
+
+  it('refuses a rejected piped token instead of falling back to the stored one', async () => {
+    const h = harness(happy(), { readToken: () => fake, hidden: ['wrong.token-456'] })
+    await expect(setup(h.io)).rejects.toThrow(/rejected/)
+    expect(h.saved).toEqual([])
+  })
+
+  it('keeps the user chosen last time, even for a team app', async () => {
+    const other = '123456789012345678'
+    const team = { owner_user_id: OWNER, members: [{ user: { id: OWNER, username: 'boss' } }] }
+    for (const a of [app(), app({ owner: { id: '999', username: 'team', flags: 1024 }, team })]) {
+      const h = harness(happy({ 'GET /applications/@me': a }))
+      writeConfig(h.io.configPath, { guildId: '892877557492510771', userId: other })
+      await setup(h.io)
+      expect(h.config().userId).toBe(other)
+    }
+  })
+
+  it('replaces a config file that is not valid JSON', async () => {
+    const h = harness(happy())
+    writeFileSync(h.io.configPath, 'null')
+    await setup(h.io)
+    expect(h.output()).toContain(`Warning: ignoring the unreadable ${h.io.configPath}`)
+    expect(h.config()).toEqual({ guildId: '892877557492510771', userId: OWNER })
   })
 
   it('asks for a new token when the stored one no longer works', async () => {
@@ -334,6 +369,22 @@ describe('setup (TTY)', () => {
     expect(h.output()).toMatch(/17 to 20 digits/)
     expect(h.questions.at(-2)).toContain('friend')
     expect(h.config().userId).toBe(other)
+  })
+
+  it('offers to keep the user chosen last time, by name, and asks the usual way on no', async () => {
+    const other = '123456789012345678'
+    const routes = happy({ [`GET /users/${other}`]: { id: other, username: 'friend' } })
+    const kept = harness(routes, { tty: true, answers: ['', ''] })
+    writeConfig(kept.io.configPath, { guildId: '892877557492510771', userId: other })
+    await setup(kept.io)
+    expect(kept.questions[0]).toBe('Keep friend as the only user who can type? [Y/n] ')
+    expect(kept.config().userId).toBe(other)
+
+    const changed = harness(routes, { tty: true, answers: ['n', '', ''] })
+    writeConfig(changed.io.configPath, { guildId: '892877557492510771', userId: other })
+    await setup(changed.io)
+    expect(changed.questions[1]).toMatch(/^Only me .* OK\? \[Y\/n\] $/)
+    expect(changed.config().userId).toBe(OWNER)
   })
 
   it('defaults to No for a team app', async () => {

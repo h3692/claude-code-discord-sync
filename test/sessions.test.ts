@@ -178,6 +178,18 @@ describe('listSessions on Windows', () => {
     const { sessionsDir, projectsDir } = await setup({ 'a.json': winEntry({ sessionId: 'sid-a', procStartFt: 999 }) })
     expect(await listSessions(sessionsDir, projectsDir, 'win32')).toMatchObject([{ sessionId: 'sid-a', procStart: '999' }])
   })
+
+  it('forgets cached checks for entries no longer live in the registry, so a reused pid is measured again', async () => {
+    verifiedStarts.set(`${process.pid}|999`, true)
+    verifiedStarts.set(`${process.pid}|555`, true)
+    verifiedStarts.set('999999|1', true)
+    const { sessionsDir, projectsDir } = await setup({ 'a.json': winEntry({ sessionId: 'sid-a', procStartFt: '999' }) })
+    await listSessions(sessionsDir, projectsDir, 'win32')
+    expect([...verifiedStarts.keys()]).toEqual([`${process.pid}|999`])
+    const empty = await setup({})
+    expect(await listSessions(empty.sessionsDir, empty.projectsDir, 'win32')).toEqual([])
+    expect(verifiedStarts.size).toBe(0)
+  })
 })
 
 describe.runIf(process.platform === 'win32')('Windows start times (real PowerShell)', () => {

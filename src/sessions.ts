@@ -110,6 +110,9 @@ export const verifiedStarts = new Map<string, boolean>()
 // Unlike ps on Unix, a failed PowerShell check drops the sessions it was asked about, and is retried next time.
 async function verifiedOnWindows(entries: any[]): Promise<any[]> {
   const key = (e: any) => `${e.pid}|${startFt(e)}`
+  // A key whose entry is gone or whose pid died is dropped, so a later reuse of that pid is measured afresh.
+  const current = new Set(entries.map(key))
+  for (const k of verifiedStarts.keys()) if (!current.has(k)) verifiedStarts.delete(k)
   const unknown = entries.filter((e) => !verifiedStarts.has(key(e)))
   if (unknown.length) {
     const starts = await windowsStartTimes(unknown.map((e) => e.pid)).catch(() => null)
@@ -131,8 +134,9 @@ async function findTranscript(projectsDir: string, dirs: string[], sessionId: st
 
 export async function listSessions(sessionsDir: string, projectsDir: string, platform = process.platform as string): Promise<Session[]> {
   const running = (await readRegistry(sessionsDir)).filter((e) => alive(e.pid))
-  if (!running.length) return []
   const windows = platform === 'win32'
+  // Windows goes on with no live entries too, to prune its start-time cache.
+  if (!running.length && !windows) return []
   const starts = windows ? null : await startTimes(running.map((e) => e.pid))
   // Without ps we cannot detect pid reuse, so a live pid is the best we have.
   const live = windows ? await verifiedOnWindows(running)
