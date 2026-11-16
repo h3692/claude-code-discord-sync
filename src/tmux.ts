@@ -88,7 +88,7 @@ export function screenHash(screen: string): string {
 }
 
 // The ❯ cursor is dropped so arrow-key navigation doesn't look like a new prompt.
-function hashBody(lines: string[]): string {
+export function hashBody(lines: string[]): string {
   const body = lines.map((l) => l.trim().replace(/^❯\s*/, '')).filter(Boolean).join('\n')
   return createHash('sha256').update(body).digest('hex').slice(0, 12)
 }
@@ -105,7 +105,7 @@ export function sanitizePaste(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
 }
 
-function tmux(...args: string[]): Promise<{ stdout: string }> {
+export function tmux(...args: string[]): Promise<{ stdout: string }> {
   const socket = process.env.TMUX_SOCKET_NAME
   return exec('tmux', socket ? ['-L', socket, ...args] : args)
 }
@@ -202,7 +202,8 @@ export async function checkPane(
   }
 }
 
-export async function pasteText(pane: string, text: string, platform = process.platform as string): Promise<void> {
+// enter: false leaves the text in the input, for a caller that checks the screen before submitting it.
+export async function pasteText(pane: string, text: string, platform = process.platform as string, enter = true): Promise<void> {
   assertPane(pane)
   const name = `ccds-${randomBytes(6).toString('hex')}`
   if (platform === 'win32') {
@@ -216,7 +217,7 @@ export async function pasteText(pane: string, text: string, platform = process.p
       await writeFile(file, clean, { flag: 'wx' })
       await tmux('load-buffer', '-b', name, file)
       await tmux('paste-buffer', '-p', '-d', '-b', name, '-t', pane)
-      await tmux('send-keys', '-t', pane, 'Enter')
+      if (enter) await tmux('send-keys', '-t', pane, 'Enter')
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -230,7 +231,7 @@ export async function pasteText(pane: string, text: string, platform = process.p
     child.stdin.end(sanitizePaste(text))
   })
   await tmux('paste-buffer', '-p', '-d', '-b', name, '-t', pane)
-  await tmux('send-keys', '-t', pane, 'Enter')
+  if (enter) await tmux('send-keys', '-t', pane, 'Enter')
 }
 
 export async function sendKeys(pane: string, keys: string[]): Promise<void> {

@@ -8,12 +8,14 @@ import {
 } from 'discord.js'
 import type { ButtonInteraction, CategoryChannel, Guild, TextChannel } from 'discord.js'
 import { appName, configDirFor, powershell, run } from './config.ts'
-import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, step, topicFor } from './mirror.ts'
+import { codexComposer, codexScreen, header as rolloutHeader, listCodexSessions, parseCodexLine, seedRecognised } from './codex.ts'
+import type { CodexMeta } from './codex.ts'
+import { dropEcho, endedTopic, isDue, newMirror, parseTopic, pickArchiveCategory, SHELL, step, topicFor } from './mirror.ts'
 import type { Action, Button, Input, State } from './mirror.ts'
 import { renderEnded } from './render.ts'
 import { listSessions, readStatus } from './sessions.ts'
 import type { Session } from './sessions.ts'
-import { capture, checkPane, parseDialog, pasteText, sendKeys } from './tmux.ts'
+import { capture, checkPane, parseDialog, pasteText, sanitizePaste, sendKeys } from './tmux.ts'
 import type { Dialog } from './tmux.ts'
 import { parseLine, readAppended } from './transcript.ts'
 import type { TranscriptEvent } from './transcript.ts'
@@ -123,6 +125,60 @@ export function typingRefusal(a: Typing, status: string | null, freshHash: strin
   return null
 }
 
+// Typing into Codex, every step in order. Anything it can't recognise as its prompt might be a list where Enter
+// picks the highlighted item, or the shell mode a leading `!` turns on, so each check refuses rather than guesses.
+// !type (allowWaiting) goes through here too: Codex's approvals take no free text.
+export async function typeCodex(text: string, ambiguous: boolean, io: {
+  state: () => Promise<{ state: string | null; screen: string | null }>; checkPane: () => Promise<string | null>; paste: () => Promise<void>
+  enter: () => Promise<void>; wait: () => Promise<void>
+}): Promise<string | null> {
+  if (ambiguous) return 'two Codex sessions share this folder; reply in the terminal'
+  if (sanitizePaste(text).split('\n').some((l) => SHELL.test(l.replace(/^[\s\p{Cf}]+/u, '')))) {
+    return 'a line starts with `!`, which Codex would run as a shell command'
+  }
+  const first = await io.state()
+  if (first.state !== 'idle') return first.state === 'waiting' ? 'a prompt is open — use the buttons or `!keys`' : "can't confirm Codex is at its prompt"
+  const pane = await io.checkPane()
+  if (pane) return pane
+  // A slow redraw shows the frame from before for a while, so a read that looks unchanged is retried.
+  const settle = async (tries: number, unchanged: (s: { state: string | null; screen: string | null }) => boolean) => {
+    let s = await io.state()
+    for (let i = 0; i < tries && unchanged(s); i++) {
+      await io.wait()
+      s = await io.state()
+    }
+    return s
+  }
+  const before = codexComposer(first.screen ?? '')
+  await io.paste()
+  // A stale frame or a composer that dropped the paste still reads idle; only a changed composer shows the text landed.
+  // Two retries only: Enter must land within Codex's 1 s hold on approvals after typing.
+  const pasted = await settle(2, (s) => s.state === 'idle' && codexComposer(s.screen ?? '') === before)
+  // The paste itself can open a popup (`@word`, `/`), where Enter would pick an item instead of sending.
+  if (pasted.state !== 'idle') return "pasted but not sent — Codex isn't at its prompt; check the terminal"
+  const draft = codexComposer(pasted.screen ?? '')
+  if (draft === before) return "pasted but not sent — Codex didn't take the text; check the terminal"
+  await io.enter()
+  // Codex keeps text it won't submit (an unrecognised /command) in the composer. Any other screen counts as sent.
+  const after = await settle(5, (s) => s.state === 'idle' && codexComposer(s.screen ?? '') === draft)
+  if (after.state === 'idle' && codexComposer(after.screen ?? '') === draft) {
+    return 'Codex kept the message in its composer instead of sending it — check the terminal'
+  }
+  return null
+}
+
+const UNRECORDED = "-# 📭 This Codex thread doesn't record its output; only approvals and typing work here."
+const SHARED = '-# ⚠️ Another Codex session is open in this folder, so what shows here may be from either one. Typing is refused; approvals still work.'
+
+// Where a newly matched rollout is read from. Seen after startup: from its start, whatever its age, since a resumed
+// thread matches only after its first new write and freshEvents drops its history. A fork starts with its parent's
+// history, so only from its end.
+export function codexStart(meta: CodexMeta | null, from: 'eof' | 'birth', size: number): { offset: number; notice: string | null } {
+  return { offset: from === 'eof' || meta?.forkedFromId ? size : 0, notice: meta && meta.historyMode !== 'paginated' ? UNRECORDED : null }
+}
+
+export const CATEGORY = { claude: 'Claude Sessions', codex: 'Codex Sessions' } as const
+
 // A transcript born moments ago is read from the start; an older one (resume, -c) only from its current end.
 export function startOffset(birthtimeMs: number, size: number, now: number): number {
   return birthtimeMs >= now - 15_000 ? 0 : size
@@ -134,8 +190,8 @@ export function shouldConfirm(fresh: Dialog | null, hash: string, n: number): bo
 }
 
 // Resuming appends the old conversation under the new session id; lines older than its first sight are history.
-export function freshEvents(lines: string[], seenAt: number): TranscriptEvent[] {
-  return lines.flatMap((line) => parseLine(line, seenAt - 5000))
+export function freshEvents(lines: string[], seenAt: number, parse = parseLine): TranscriptEvent[] {
+  return lines.flatMap((line) => parse(line, seenAt - 5000))
 }
 
 // Claude Code rewrites registry entries in place, so one unreadable poll is not an end; two in a row are.
@@ -168,6 +224,7 @@ type Entry = {
   from: 'eof' | 'birth'
   seenAt: number // when the current session id was first seen
   misses: number // consecutive polls without a registry entry
+  ambiguous: boolean // Codex: another terminal Codex shares the folder, as of the last poll
 }
 
 const NO_MENTIONS = { parse: [] as [] }
@@ -195,7 +252,12 @@ function payload(a: Extract<Action, { type: 'send' | 'edit' }>) {
   }
 }
 
-export type Settings = { token: string; guildId: string; userId: string; claudeDir: string; ttl: number }
+export type Settings = { token: string; guildId: string; userId: string; claudeDir: string; codexHome: string; ttl: number }
+
+// Codex's wide scan notices an in-TUI /resume of an old thread up to 30 s late; reach back that far so its first turn isn't dropped.
+export function seenAfterChange(provider: string, now: number): number {
+  return provider === 'codex' ? now - 30_000 : now
+}
 
 // Why Discord can't type into a session, for its channel; null when it can.
 export function readOnlyReason(s: { interactive: boolean; pane: string | null }, platform: string, env: Record<string, string | undefined>): string | null {
@@ -205,7 +267,7 @@ export function readOnlyReason(s: { interactive: boolean; pane: string | null },
   return null
 }
 
-export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void {
+export function main({ token, guildId, userId, claudeDir, codexHome, ttl }: Settings): void {
   const sessionsDir = join(claudeDir, 'sessions')
   const projectsDir = join(claudeDir, 'projects')
 
@@ -233,8 +295,15 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
   }
 
   let guild: Guild
-  let sessionsCat: CategoryChannel
+  let claudeCat: CategoryChannel
+  // Made at the first Codex channel, so a Claude-only setup never gets an empty category.
+  let codexCat: Promise<CategoryChannel> | undefined
   let endedCat: CategoryChannel
+  const codexCategory = () => (codexCat ??= ensureCategory(CATEGORY.codex).catch((err) => {
+    codexCat = undefined
+    throw err
+  }))
+  let codexSessions: Session[] = []
   const mirrors = new Map<string, Entry>()
   const queue = serialQueue() // per session key (or channel id for channels without a mirror)
   const paneQueue = serialQueue()
@@ -288,7 +357,8 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
           // Everything else for this session waits on the channel, so retry a transient failure (~30s total).
           for (let i = 0; !e.channel; i++) {
             try {
-              e.channel = await guild.channels.create({ name: a.name, type: ChannelType.GuildText, parent: sessionsCat.id, topic: a.topic })
+              const parent = e.state.provider === 'codex' ? (await codexCategory()).id : claudeCat.id
+              e.channel = await guild.channels.create({ name: a.name, type: ChannelType.GuildText, parent, topic: a.topic })
             } catch (err) {
               if (i >= 4) {
                 // Dropped so the next poll tracks the session afresh and tries again.
@@ -343,6 +413,20 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
     return null
   }
 
+  // Status and screen read fresh. Claude: its registry entry, and a capture while a prompt is open.
+  // Codex has no registry: one capture gives both, so they always agree, and an unreadable pane is unknown.
+  async function readScreen(e: Entry): Promise<{ status: string | null; screen: string | null; dialog: Dialog | null }> {
+    const pane = e.state.pane
+    if (e.state.provider === 'codex') {
+      const screen = pane ? await capture(pane).catch(() => null) : null
+      const { state, dialog } = codexScreen(screen ?? '')
+      return { status: state, screen, dialog }
+    }
+    const status = await readStatus(sessionsDir, e.pid)
+    const screen = status === 'waiting' && pane ? await capture(pane).catch(() => null) : null
+    return { status, screen, dialog: screen ? parseDialog(screen) : null }
+  }
+
   // Keystrokes skip the send queue (rate-limited sends must not delay them) and run in order per pane.
   // origin: the button click that produced the action, so a refused keystroke can still be reported.
   function typeInto(e: Entry, a: Typing, origin?: string): void {
@@ -350,12 +434,36 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
     if (!pane) return
     const target = a.replyTo ?? origin
     void paneQueue(pane, async () => {
-      const status = await readStatus(sessionsDir, e.pid)
-      const screen = a.type === 'keys' && a.hash && status === 'waiting' ? await capture(pane).catch(() => null) : null
-      const reason = typingRefusal(a, status, screen ? parseDialog(screen)?.hash ?? null : null)
-        ?? await checkPane(pane, e.pid, e.procStart)
-        ?? await (a.type === 'paste' ? pasteText(pane, a.text) : a.hash && a.keys[1] === 'Enter' ? confirmKeys(pane, a.keys[0], a.hash) : sendKeys(pane, a.keys))
-          .then((r) => r ?? null, (err) => err.message)
+      const codex = e.state.provider === 'codex'
+      let reason: string | null
+      if (codex && a.type === 'paste') {
+        reason = await typeCodex(a.text, e.ambiguous, {
+          state: async () => {
+            const { status, screen } = await readScreen(e)
+            return { state: status, screen }
+          },
+          checkPane: () => checkPane(pane, e.pid, e.procStart),
+          paste: async () => {
+            await pasteText(pane, a.text, undefined, false)
+            // Codex redraws after the paste; a capture before that would miss a popup the paste opened.
+            await new Promise((r) => setTimeout(r, 300))
+          },
+          enter: async () => {
+            await sendKeys(pane, ['Enter'])
+            await new Promise((r) => setTimeout(r, 300))
+          },
+          wait: () => new Promise((r) => setTimeout(r, 250)),
+        }).catch((err) => err.message)
+      } else {
+        const { status, dialog } = await readScreen(e)
+        reason = typingRefusal(a, status, dialog?.hash ?? null)
+          ?? await checkPane(pane, e.pid, e.procStart)
+          ?? await (a.type === 'paste' ? pasteText(pane, a.text)
+            // Codex: never an Enter after a button's digit, which would answer the next queued approval.
+            : codex ? sendKeys(pane, a.hash ? a.keys.slice(0, 1) : a.keys)
+            : a.hash && a.keys[1] === 'Enter' ? confirmKeys(pane, a.keys[0], a.hash) : sendKeys(pane, a.keys))
+            .then((r) => r ?? null, (err) => err.message)
+      }
       if (reason) {
         log(`not sent to ${pane}: ${reason}`)
         // The next poll re-posts a reset card; an unsent paste must not swallow a later identical terminal prompt.
@@ -388,9 +496,10 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
   function track(s: Session, channel: TextChannel | null, from: Entry['from'], archiveOnEnd = false): Entry {
     // Non-interactive (background) sessions are mirrored read-only.
     const readOnly = readOnlyReason(s, process.platform, process.env)
-    const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null, archiveOnEnd, readOnly }, userId)
+    const { state, actions } = newMirror({ ...s, pane: s.interactive ? s.pane : null, archiveOnEnd, readOnly, provider: s.provider }, userId)
     const e: Entry = {
       state, pid: s.pid, procStart: s.procStart, channel, outbox: new Outbox(), transcript: null, offset: 0, from, seenAt: Date.now(), misses: 0,
+      ambiguous: false,
     }
     mirrors.set(state.key, e)
     // An existing channel replaces create_channel; its current name stops a needless rename.
@@ -403,9 +512,19 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
     return e
   }
 
+  // Codex discovery returns its previous list on failure; a bug in it must not stop Claude mirroring either.
+  async function listAll(): Promise<Session[]> {
+    const claude = await listSessions(sessionsDir, projectsDir)
+    codexSessions = await listCodexSessions(codexHome, codexSessions, log).catch((err) => {
+      log('codex discovery failed:', (err as Error).message)
+      return codexSessions
+    })
+    return [...claude, ...codexSessions]
+  }
+
   let lastSweep = 0
   async function tick(startup: boolean): Promise<void> {
-    const sessions = await listSessions(sessionsDir, projectsDir)
+    const sessions = await listAll()
     const now = Date.now()
     const live = new Set(sessions.map((s) => `${s.pid}|${s.procStart}`))
     for (const [key, e] of mirrors) {
@@ -418,24 +537,41 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
     for (const s of sessions) {
       // Sessions already running at startup start at the end of their transcript: no history replay.
       const e = mirrors.get(`${s.pid}|${s.procStart}`) ?? track(s, null, startup && s.transcript ? 'eof' : 'birth')
-      if (s.sessionId !== e.state.sessionId) {
+      // A Codex session that loses its rollout match keeps reading the one it had.
+      if (s.sessionId && s.sessionId !== e.state.sessionId) {
+        // A pending Codex session ('') keeps the time its TUI was first seen, so a resumed thread's history stays out.
+        if (e.state.sessionId) {
+          e.transcript = null
+          e.from = 'birth'
+          e.seenAt = seenAfterChange(s.provider, now)
+        }
         apply(e, { kind: 'session_changed', sessionId: s.sessionId })
-        e.transcript = null
-        e.from = 'birth'
-        e.seenAt = now
       }
+      if (s.ambiguous && !e.ambiguous) apply(e, { kind: 'notice', text: SHARED })
+      e.ambiguous = !!s.ambiguous
       if (s.transcript && s.transcript !== e.transcript) {
         const st = await stat(s.transcript).catch(() => null)
         e.transcript = s.transcript
         e.offset = !st ? 0 : e.from === 'eof' ? st.size : startOffset(st.birthtimeMs, st.size, now)
+        if (s.provider === 'codex') {
+          const { offset, notice } = codexStart(await rolloutHeader(s.transcript), e.from, st?.size ?? 0)
+          e.offset = offset
+          if (notice) apply(e, { kind: 'notice', text: notice })
+        }
       }
       if (e.transcript) {
         const { lines, next } = await readAppended(e.transcript, e.offset)
         e.offset = next
-        const events = freshEvents(lines, e.seenAt)
+        const events = freshEvents(lines, e.seenAt, s.provider === 'codex' ? parseCodexLine : parseLine)
         if (events.length) apply(e, { kind: 'events', events })
       }
-      if (s.status !== e.state.status || s.status === 'waiting') {
+      if (s.provider === 'codex') {
+        // While a card is open every poll counts toward closing it.
+        if (s.status !== e.state.status || s.status === 'waiting' || e.state.card) {
+          const { status, screen } = await readScreen(e)
+          apply(e, { kind: 'status', status: status ?? '', screen: status === 'waiting' ? screen : null })
+        }
+      } else if (s.status !== e.state.status || s.status === 'waiting') {
         const screen = s.status === 'waiting' && e.state.pane ? await capture(e.state.pane).catch(() => null) : null
         // The prompt may have closed while we captured (e.g. just answered); a stale screen would ping a bogus card.
         if (screen !== null && (await readStatus(sessionsDir, e.pid)) !== 'waiting') continue
@@ -473,11 +609,21 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
   async function start(): Promise<void> {
     guild = await client.guilds.fetch(guildId)
     await guild.channels.fetch()
-    sessionsCat = await ensureCategory('Claude Sessions')
+    claudeCat = await ensureCategory(CATEGORY.claude)
     endedCat = await ensureCategory('Ended Sessions')
-    const sessions = await listSessions(sessionsDir, projectsDir)
+    const found = guild.channels.cache.find((c) => c.type === ChannelType.GuildCategory && c.name === CATEGORY.codex) as CategoryChannel | undefined
+    if (found) codexCat = Promise.resolve(found)
+    const live = [claudeCat.id, found?.id]
+    // Discovery only lists a TUI once its screen is recognised; a live channel says it already was.
+    const keys: string[] = []
+    for (const c of found?.children.cache.values() ?? []) {
+      const t = parseTopic(c.type === ChannelType.GuildText ? c.topic : null)
+      if (t && t.endedAt === null) keys.push(`${t.pid}|${t.procStart}`)
+    }
+    seedRecognised(keys)
+    const sessions = await listAll()
     for (const c of guild.channels.cache.values()) {
-      if (c.parentId !== sessionsCat.id || c.type !== ChannelType.GuildText) continue
+      if (!live.includes(c.parentId ?? '') || c.type !== ChannelType.GuildText) continue
       const t = parseTopic(c.topic)
       // Already ended (its move to Ended Sessions failed); the sweep deletes it.
       if (!t || t.endedAt !== null) continue
@@ -538,9 +684,18 @@ export function main({ token, guildId, userId, claudeDir, ttl }: Settings): void
         await interaction.followUp({ content: 'That session has ended.', flags: MessageFlags.Ephemeral })
         return
       }
-      const s = (await listSessions(sessionsDir, projectsDir)).find((x) => `${x.pid}|${x.procStart}` === e.state.key)
-      const status = s?.status ?? ''
-      const screen = status === 'waiting' && e.state.pane ? await capture(e.state.pane).catch(() => null) : null
+      let status: string
+      let screen: string | null
+      // Codex has no registry: one capture now gives both.
+      if (e.state.provider === 'codex') {
+        const fresh = await readScreen(e)
+        status = fresh.status ?? ''
+        screen = fresh.screen
+      } else {
+        const s = (await listSessions(sessionsDir, projectsDir)).find((x) => `${x.pid}|${x.procStart}` === e.state.key)
+        status = s?.status ?? ''
+        screen = status === 'waiting' && e.state.pane ? await capture(e.state.pane).catch(() => null) : null
+      }
       remember(interaction.id, interaction)
       apply(e, { kind: 'button', id: interaction.id, n: Number(m[1]), hash: m[2], status, screen })
     }

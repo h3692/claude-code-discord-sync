@@ -9,6 +9,7 @@ export type TranscriptEvent =
   | { kind: 'agent_end'; id: string; status: 'completed' | 'failed' | 'stopped'; durationMs?: number }
   | { kind: 'turn_end'; durationMs: number; pendingAgents: number }
   | { kind: 'title'; title: string }
+  | { kind: 'turn_aborted' } // Codex: the turn was interrupted; nothing to ping
 
 type AgentStatus = 'completed' | 'failed' | 'stopped'
 const AGENT_STATUSES = ['completed', 'failed', 'stopped']

@@ -1,0 +1,45 @@
+                                                                                                                                            
+                                                               
+› Run exactly this shell command once, requesting approval/escalation if needed: touch probe1.txt                                           
+                                                                                                                                            
+                                                                                                                                            
+• Hook failed                                                                                                                               
+  └ plugin contents changed; hook approval required                                                                                         
+                                                               
+• I’ll run the requested command once and request the required filesystem approval.                                                         
+                                                                                                                                            
+✔ You approved codex to run touch probe1.txt this time                                                                                      
+                                                                                                                                            
+• Ran touch probe1.txt                                                                                                                      
+  └ (no output)                                                                                                                             
+                                                                                                                                            
+• Created probe1.txt.                                                                                                                       
+                                                                                                                                            
+  Worked for 15s • 2:54 AM                                                                                                                  
+                                                                                                                                            
+                                                                                                                                            
+› In ONE response, issue TWO separate shell tool calls in parallel (do not combine them), each requesting escalation: `touch probe2.txt`    
+  and `touch probe3.txt`.                                                                                                                   
+                                                                                                                                            
+                                                                                                                                            
+• Hook failed                                                                           
+  └ plugin contents changed; hook approval required                                                                                         
+                                                                                                                                            
+• I’ll issue two separate shell calls in parallel, each with its own escalation request.                                                    
+                                                                                                                                            
+• Running touch probe2.txt                                                                                                                  
+                                                                                                                                            
+✔ You approved codex to run touch probe2.txt this time                                                                                      
+                                                                                                                                            
+✗ You canceled the request to run touch probe3.txt                                                                                          
+                                                                                                                                            
+• Failed (exit 1) touch probe3.txt                                                                                                          
+  └ (no output)                                                                                                                             
+                                                                                                                                            
+■ Conversation interrupted - use /feedback if something went wrong                                                                          
+                                                                                                                                            
+                                                                                                                                            
+› Ask Codex to do anything                                                                       
+                                                          
+  GPT-6-Luna high · /tmp/project · Reply with pong
+  ← for agents · ? for shortcuts                                                                                   ⚠ 1 warning · f2 to view 

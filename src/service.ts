@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { appName, configDirFor, deleteToken, readConfig, readToken, run } from './config.ts'
 import type { Command } from './config.ts'
+import { listCodexSessions } from './codex.ts'
 import { commandLine, isWatcherCommand, lockDirFor } from './index.ts'
 import { listSessions, readRegistry, windowsStartTimes } from './sessions.ts'
 import { checkPane } from './tmux.ts'
@@ -25,7 +26,7 @@ export type Service = {
 }
 
 // Only set for isolated installs (live tests); a default install passes none of them.
-const PASSTHROUGH = ['CCDS_NAME', 'CLAUDE_DIR', 'XDG_CONFIG_HOME']
+const PASSTHROUGH = ['CCDS_NAME', 'CLAUDE_DIR', 'XDG_CONFIG_HOME', 'CODEX_HOME']
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 const NO_SYSTEMD = `systemd isn't running for your user, so nothing can start the watcher at login.
 On WSL, add this to /etc/wsl.conf, run \`wsl --shutdown\` from Windows, then run setup again:
@@ -51,7 +52,8 @@ export function serviceFor(platform: string, { name, node, cli, home, uid, env, 
   if (platform === 'darwin') {
     const path = posix.join(home, 'Library', 'LaunchAgents', `${name}.plist`)
     const log = posix.join(home, 'Library', 'Logs', `${name}.log`)
-    const vars = [['PATH', `${posix.dirname(node)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`], ...passed]
+    // /usr/sbin holds lsof, which Codex discovery needs on macOS.
+    const vars = [['PATH', `${posix.dirname(node)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`], ...passed]
     const text = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -92,7 +94,7 @@ ${vars.map(([k, v]) => `		<key>${k}</key>\n		<string>${xml(v)}</string>\n`).join
   }
   if (platform === 'win32') {
     // shortcut: a Run value can't carry env vars, so isolated names only work until the next login; fine for live tests.
-    const note = passed.some(([k]) => k !== 'XDG_CONFIG_HOME')
+    const note = passed.some(([k]) => k === 'CCDS_NAME' || k === 'CLAUDE_DIR')
       ? `At login the Run entry starts with the default settings: it can't carry CCDS_NAME or CLAUDE_DIR.`
       : undefined
     const kill: Step[] = watcher ? [{ file: 'taskkill', args: ['/PID', String(watcher), '/F'], mayFail: true }] : []
@@ -117,7 +119,7 @@ Description=${name}
 
 [Service]
 ExecStart=${program.map((a) => systemdQuote(a, true)).join(' ')} start
-${[['PATH', `${posix.dirname(node)}:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin`], ...passed].map(([k, v]) => `Environment=${systemdQuote(`${k}=${v}`)}\n`).join('')}Restart=on-failure
+${[['PATH', `${posix.dirname(node)}:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`], ...passed].map(([k, v]) => `Environment=${systemdQuote(`${k}=${v}`)}\n`).join('')}Restart=on-failure
 RestartSec=30
 
 [Install]
@@ -274,6 +276,14 @@ export async function status(platform = process.platform as string, env: Env = p
     const why = !x.interactive ? 'background session' : !x.pane ? 'not in tmux'
       : await checkPane(x.pane, x.pid, x.procStart, platform, { ...env, CCDS_WINDOWS_TYPING: '1' }) ?? (typingOff ? 'checks pass, but Windows typing is off' : null)
     console.log(`  ${x.name} (pid ${x.pid}${x.pane ? `, pane ${x.pane}` : ''}): ${why ? `read-only, ${why}` : 'can type'}`)
+  }
+
+  // Empty on Windows, or without a Codex sessions folder.
+  const codex = await listCodexSessions(env.CODEX_HOME || join(homedir(), '.codex'), [], (...parts) => console.log('  ', ...parts), undefined, platform)
+  console.log(`Codex sessions: ${codex.length || 'none'}`)
+  for (const x of codex) {
+    const why = await checkPane(x.pane!, x.pid, x.procStart, platform, env) ?? (x.ambiguous ? 'another Codex shares this folder' : null)
+    console.log(`  ${x.cwd} (pid ${x.pid}, pane ${x.pane}): ${x.transcript ?? 'waiting for first message'}, screen ${x.status}, ${why ? `read-only, ${why}` : 'can type'}`)
   }
 }
 

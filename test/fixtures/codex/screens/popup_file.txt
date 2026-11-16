@@ -1,0 +1,45 @@
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.162.1 -> 0.169.0         │
+│ Run npm install -g @openai/codex to update.     │                                                        
+│                                                 │      
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯                                                                                         
+                           
+                                                
+  >_ OpenAI Codex (v0.162.1)
+     /tmp/project                                 
+
+  To get started, describe a task or try one of these commands:
+
+  /init - create an AGENTS.md file with instructions for Codex         
+  /status - show current session configuration                                  
+  /permissions - choose what Codex is allowed to do                               
+  /model - choose what model and reasoning effort to use                           
+  /review - review any changes and find issues                                      
+                                                                                    
+                                                                                     
+                                                                                      
+                                                                                      
+  Mentions                                                                             
+  Files, directories, plugins, skills and tasks                                       
+                                                                                      
+   All Results   Filesystem Only   Plugins                                           
+                                                                                   
+  ma                                                                            
+                                                                               
+› Plugin Management            Discover and manage plugins                                                                            Plugin
+  Default templates            Default templates for documents, spreadsheets, and presentations                                       Plugin
+  Image Gen                    Generate or edit images for websites, games, and more                                                  Skill 
+  ui-ux-pro-max                UI/UX design intelligence for web, mobile, and desktop. This skill should be used when designing, bu…  Skill 
+  Impeccable                   Use when the user wants to design, redesign, shape, critique, audit, polish, clarify,...               Skill 
+  Example task                 /home/user                                                                                          Task
+  math.py                      ./                                                                                                     File
+
+
+  enter/tab insert · esc close · ↑/↓ select · ←/→ filter
+
+› look at @ma             
+
+  GPT-6-Luna high · /tmp/project   
+                                                                                                                                           

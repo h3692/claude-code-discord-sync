@@ -1,4 +1,5 @@
 import { basename } from 'node:path'
+import { codexScreen } from './codex.ts'
 import { channelName, renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderReadOnly, renderText } from './render.ts'
 import type { Agent, Tool } from './render.ts'
 import { parseDialog, parseKeys, sanitizePaste, screenHash } from './tmux.ts'
@@ -19,13 +20,15 @@ export type Action =
 
 export type State = {
   key: string // `${pid}|${procStart}`
-  sessionId: string
+  provider: 'claude' | 'codex'
+  sessionId: string // '' for a Codex session whose rollout doesn't exist yet
   folder: string // basename(cwd)
   lock: string // channel name prefix marking a session Discord can't type into, kept across renames
   cwd: string
   userId: string
   pane: string | null // null => read-only
   status: string
+  quiet: number // Codex: consecutive idle polls, so a card closes only once the prompt has stayed gone
   titled: boolean
   channel: string // current channel name
   seq: number // ref counter
@@ -47,10 +50,13 @@ export type Input =
   | { kind: 'ended' }
   | { kind: 'message'; id: string; text: string }
   | { kind: 'button'; id: string; n: number; hash: string; status: string; screen: string | null } // fresh status+capture taken at click time
+  | { kind: 'notice'; text: string }
 
 const TOPIC = /^ccds\|(\d+)\|([^|]+)(\|archive)?(?:\|ended:(\d+))?$/
 const EMBED_MAX = 4096
 const HINT = "\n-# Can't read the options reliably — reply with `!keys 2`, `!keys Down Enter` or `!type your answer`"
+// Codex takes no free text while a prompt is open, so `!type` is always refused there.
+const CODEX_HINT = "\n-# Can't read the options reliably — reply with `!keys 2` or `!keys Down Enter`"
 const NO_TMUX = "Claude is waiting for you, but this session isn't in tmux — answer at the terminal."
 const NO_SCREEN = "Claude is waiting for you, but the screen couldn't be read — answer at the terminal, or try `!keys`."
 const CLOSED = 'That prompt is no longer open.'
@@ -63,12 +69,15 @@ const BAD_KEYS = '⌨️ Allowed keys: digits 0-9, Up, Down, Left, Right, Enter,
 // ones inside the text are kept, since emoji sequences and some scripts need joiners.
 const normalize = (text: string) => sanitizePaste(text).replace(/^[\s\p{Cf}]+/u, '').trim()
 // Fullwidth and small exclamation marks count as `!`.
-const SHELL = /^[!！﹗]/
+export const SHELL = /^[!！﹗]/
 // Polls after an answer that may still show the old screen; the same prompt past that was asked again.
 const REPEATS = 3
 
 export function newMirror(
-  s: { pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string; archiveOnEnd?: boolean; readOnly?: string | null },
+  s: {
+    pid: number; procStart: string; sessionId: string; cwd: string; name: string; pane: string | null; status: string; archiveOnEnd?: boolean; readOnly?: string | null
+    provider?: 'claude' | 'codex'
+  },
   userId: string,
 ): { state: State; actions: Action[] } {
   const folder = basename(s.cwd)
@@ -78,8 +87,8 @@ export function newMirror(
   const lock = s.readOnly ? '🔒-' : ''
   const channel = lock + (full.startsWith(prefix + prefix) ? full.slice(prefix.length) : full)
   const state: State = {
-    key: `${s.pid}|${s.procStart}`, sessionId: s.sessionId, folder, lock, cwd: s.cwd, userId, pane: s.pane, status: s.status,
-    titled: false, channel, seq: 0, tools: [], activityRefs: [], agents: [], agentsRef: null, agentIds: [], rendered: {},
+    key: `${s.pid}|${s.procStart}`, provider: s.provider ?? 'claude', sessionId: s.sessionId, folder, lock, cwd: s.cwd, userId, pane: s.pane,
+    status: s.status, quiet: 0, titled: false, channel, seq: 0, tools: [], activityRefs: [], agents: [], agentsRef: null, agentIds: [], rendered: {},
     card: null, pendingEcho: [], archiveOnEnd: s.archiveOnEnd ?? false,
   }
   const actions: Action[] = [{ type: 'create_channel', name: channel, topic: topicFor(s.pid, s.procStart, state.archiveOnEnd) }]
@@ -129,6 +138,8 @@ export function step(state: State, input: Input): { state: State; actions: Actio
     s.agents = s.agents.map((a): Agent => (a.id === id ? { ...a, ...patch } : a))
     editPanel()
   }
+  // Each provider draws its prompts its own way; Codex's parser never sets confirm.
+  const dialogOf = (screen: string) => (s.provider === 'codex' ? codexScreen(screen).dialog : parseDialog(screen))
   // Replaces the embed too, so the old prompt no longer looks answerable.
   const closeCard = (content: string, title: string) => {
     if (s.card) actions.push({ type: 'edit', ref: s.card.ref, content, embed: { title, description: s.card.dialog?.question ?? 'prompt' }, buttons: [] })
@@ -200,6 +211,11 @@ export function step(state: State, input: Input): { state: State; actions: Actio
               : { type: 'send', ref: ref(), content: renderDone(e.durationMs, pending, s.userId), ping: true })
             break
           }
+          case 'turn_aborted':
+            s.agents = s.agents.map((a): Agent => (a.state === 'running' ? { ...a, state: 'stopped' } : a))
+            editPanel()
+            closeStretch()
+            break
           case 'title': {
             if (s.titled) break
             s.titled = true
@@ -214,6 +230,11 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       }
       break
     case 'session_changed':
+      // A pending Codex session's rollout appears at its first message: the same conversation, not a new one.
+      if (!s.sessionId) {
+        s.sessionId = input.sessionId
+        break
+      }
       closeCard('-# 🔄 session restarted', '🔄 Session restarted')
       actions.push({ type: 'send', ref: ref(), content: '-# ── new conversation ──' })
       Object.assign(s, { sessionId: input.sessionId, tools: [], activityRefs: [], agents: [], agentsRef: null, rendered: {} })
@@ -225,10 +246,14 @@ export function step(state: State, input: Input): { state: State; actions: Actio
     case 'status': {
       s.status = input.status
       if (input.status !== 'waiting') {
+        // Codex: an unreadable screen proves nothing, and a queued approval can follow a single idle capture.
+        s.quiet = input.status === 'idle' ? s.quiet + 1 : 0
+        if (s.provider === 'codex' && s.quiet < 2) break
         if (s.card) closeCard(s.card.answered ? `✅ ${s.card.answered} — via Discord` : '✅ answered in terminal', '✅ Answered')
         break
       }
-      const parsed = input.screen ? parseDialog(input.screen) : null
+      s.quiet = 0
+      const parsed = input.screen ? dialogOf(input.screen) : null
       // Discord allows 5 rows of 5 buttons.
       const dialog = parsed && parsed.options.length <= 25 ? parsed : null
       const buttons = (dialog?.options ?? []).map(({ n, label }): Button => {
@@ -236,17 +261,24 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         const cut = /[\uD800-\uDBFF]/.test(text[78]) ? 78 : 79
         return { id: `ccds:${n}:${dialog!.hash}`, label: text.length > 80 ? text.slice(0, cut) + '…' : text }
       })
-      let embed = { title: renderCard('').title, description: s.pane ? NO_SCREEN : NO_TMUX }
-      if (input.screen) embed = renderCard(input.screen)
+      const agent = s.provider === 'codex' ? 'Codex' : 'Claude'
+      let embed = { title: renderCard('', agent).title, description: s.pane ? NO_SCREEN : NO_TMUX }
+      if (input.screen) {
+        // Codex draws no border above its prompt, so its card starts at the approval title instead.
+        const rows = input.screen.split('\n')
+        const shown = s.provider === 'codex' && dialog ? rows.slice(rows.findLastIndex((l) => l.trim() === dialog.question)).join('\n') : input.screen
+        embed = renderCard(shown, agent)
+      }
       if (input.screen && !dialog) {
-        const over = embed.description.length + HINT.length - EMBED_MAX
+        const hint = s.provider === 'codex' ? CODEX_HINT : HINT
+        const over = embed.description.length + hint.length - EMBED_MAX
         if (over > 0) {
           // Drop whole lines from the top of the fenced screen to make room for the hint.
           const body = embed.description.slice(4, -4)
           const nl = body.indexOf('\n', over + 2)
           embed.description = `\`\`\`\n…${nl === -1 ? '' : body.slice(nl)}\n\`\`\``
         }
-        embed.description += HINT
+        embed.description += hint
       }
       const shown = input.screen ? screenHash(input.screen) : null
       let retry = false
@@ -276,7 +308,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       break
     }
     case 'button': {
-      const dialog = input.screen ? parseDialog(input.screen) : null
+      const dialog = input.screen ? dialogOf(input.screen) : null
       const option = dialog?.options.find((o) => o.n === input.n)
       if (!s.card || input.status !== 'waiting' || !dialog || dialog.hash !== input.hash || !option) {
         actions.push({ type: 'reply', replyTo: input.id, content: CLOSED })
@@ -284,7 +316,9 @@ export function step(state: State, input: Input): { state: State; actions: Actio
         actions.push({ type: 'reply', replyTo: input.id, content: 'Already sent.' })
       } else {
         s.card = { ref: s.card.ref, hash: dialog.hash, screenHash: screenHash(input.screen!), dialog, answered: option.label, repeats: 0 }
-        actions.push({ type: 'keys', keys: dialog.confirm ? [String(option.n), 'Enter'] : [String(option.n)], hash: dialog.hash })
+        // Codex: a digit picks and accepts, and the next queued approval shows at once, so an Enter would answer that one too.
+        const confirm = dialog.confirm && s.provider !== 'codex'
+        actions.push({ type: 'keys', keys: confirm ? [String(option.n), 'Enter'] : [String(option.n)], hash: dialog.hash })
         actions.push({
           type: 'edit', ref: s.card.ref, content: `⏳ sending ${option.n}. ${option.label}…`,
           embed: { title: '⏳ Sending', description: dialog.question }, buttons: [],
@@ -292,9 +326,13 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       }
       break
     }
+    case 'notice':
+      actions.push({ type: 'send', ref: ref(), content: input.text })
+      break
     case 'message': {
       // Normalized up front so the `!` checks see what the paste would actually type.
       const text = normalize(input.text)
+      const tool = s.provider === 'codex' ? 'Codex' : 'Claude Code'
       const reply = (content: string) => actions.push({ type: 'reply', replyTo: input.id, content })
       const paste = (t: string, allowWaiting = false) => {
         actions.push(allowWaiting ? { type: 'paste', text: t, replyTo: input.id, allowWaiting } : { type: 'paste', text: t, replyTo: input.id })
@@ -318,7 +356,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
           case 'type':
             if (!s.pane) reply(READ_ONLY)
             else if (!args) reply('✍️ Usage: `!type your answer`')
-            else if (SHELL.test(args)) reply('🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.')
+            else if (SHELL.test(args)) reply(`🚫 That text starts with \`!\`, which ${tool} would run as a shell command — not sent.`)
             else paste(args, true)
             break
           case 'archive':
@@ -330,7 +368,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
             reply('📦 This channel will be archived when the session ends.')
             break
           default:
-            reply("🚫 Messages starting with `!` aren't sent — Claude Code would run them as shell commands. Commands: `!keys`, `!type`, `!archive`.")
+            reply(`🚫 Messages starting with \`!\` aren't sent — ${tool} would run them as shell commands. Commands: \`!keys\`, \`!type\`, \`!archive\`.`)
         }
       } else if (!s.pane) reply(READ_ONLY)
       else if (s.status === 'waiting') reply('🟡 A prompt is open — tap a button, or use `!keys` / `!type`.')

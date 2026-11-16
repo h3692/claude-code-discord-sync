@@ -4,7 +4,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { acquireLock, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, serialQueue, shouldConfirm, startOffset, typingRefusal, unanswer } from '../src/index.ts'
+import {
+  acquireLock, CATEGORY, codexStart, commandLine, freshEvents, isWatcherCommand, lockDirFor, missCount, Outbox, readOnlyReason, seenAfterChange, serialQueue, shouldConfirm,
+  startOffset, typeCodex, typingRefusal, unanswer,
+} from '../src/index.ts'
+import { parseCodexLine } from '../src/codex.ts'
 import { newMirror } from '../src/mirror.ts'
 
 // Keep every test off the user's real tmux server: anything not on its own socket hits an empty one.
@@ -304,6 +308,158 @@ describe('freshEvents', () => {
   })
 })
 
+describe('freshEvents for Codex', () => {
+  it('drops rollout lines from before the session was first seen (a resumed thread)', () => {
+    const seenAt = Date.parse('2026-11-14T12:00:00Z')
+    const line = (timestamp: string) => JSON.stringify({ timestamp, type: 'event_msg', payload: { type: 'task_complete', duration_ms: 1 } })
+    expect(freshEvents([line('2026-11-10T09:00:00Z'), line('2026-11-14T12:00:01Z')], seenAt, parseCodexLine)).toEqual([
+      { kind: 'turn_end', durationMs: 1, pendingAgents: 0 },
+    ])
+  })
+})
+
+describe('typeCodex', () => {
+  const at = (state: string, name?: string) => ({ state, screen: name ? readFileSync(new URL(`./fixtures/codex/screens/${name}.txt`, import.meta.url), 'utf8') : null })
+  const sent = () => [at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_empty')]
+  const retries = Array(5).fill(['wait', 'state']).flat()
+  function io(states: { state: string; screen: string | null }[], pane: string | null = null, fail = false) {
+    const calls: string[] = []
+    return {
+      calls,
+      io: {
+        state: async () => (calls.push('state'), states.shift()!),
+        checkPane: async () => (calls.push('checkPane'), pane),
+        paste: async () => {
+          calls.push('paste')
+          if (fail) throw new Error('tmux load-buffer exited with 1')
+        },
+        enter: async () => void calls.push('enter'),
+        wait: async () => void calls.push('wait'),
+      },
+    }
+  }
+
+  it('reads again while a slow redraw still shows the old composer, after the paste and after Enter', async () => {
+    const pasteSlow = io([at('idle', 'idle_empty'), at('idle', 'idle_empty'), at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_empty')])
+    expect(await typeCodex('hello', false, pasteSlow.io)).toBeNull()
+    expect(pasteSlow.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'wait', 'state', 'wait', 'state', 'enter', 'state'])
+    const enterSlow = io([at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('idle', 'idle_draft'), at('idle', 'idle_draft'), at('idle', 'idle_empty')])
+    expect(await typeCodex('hello', false, enterSlow.io)).toBeNull()
+    expect(enterSlow.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state', 'wait', 'state', 'wait', 'state'])
+  })
+
+  it('checks the screen and the pane, pastes, sees the composer change, presses Enter, then sees it cleared', async () => {
+    const t = io(sent())
+    expect(await typeCodex('hello\nworld', false, t.io)).toBeNull()
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state'])
+  })
+
+  it('refuses before touching the pane when two Codex sessions share the folder', async () => {
+    const t = io(sent())
+    expect(await typeCodex('hello', true, t.io)).toBe('two Codex sessions share this folder; reply in the terminal')
+    expect(t.calls).toEqual([])
+  })
+
+  it.each(['!ls', 'fine\n!rm -rf ~', 'fine\n   !ls', 'fine\n\u200b!ls', 'fine\n！ls', 'fine\r\n!ls', 'fine\n\x01!ls'])(
+    'refuses %j, since a line starting with ! would run as a shell command', async (text) => {
+      const t = io(sent())
+      expect(await typeCodex(text, false, t.io)).toMatch(/starts with `!`/)
+      expect(t.calls).toEqual([])
+    })
+
+  it('refuses unless the first capture shows the prompt', async () => {
+    const unknown = io([at('unknown')])
+    expect(await typeCodex('hello', false, unknown.io)).toBe("can't confirm Codex is at its prompt")
+    expect(unknown.calls).toEqual(['state'])
+    const waiting = io([at('waiting', 'approval_command')])
+    expect(await typeCodex('hello', false, waiting.io)).toBe('a prompt is open — use the buttons or `!keys`')
+    expect(waiting.calls).toEqual(['state'])
+  })
+
+  it('refuses when the pane check fails, before pasting', async () => {
+    const t = io(sent(), 'Claude Code is suspended (Ctrl-Z)')
+    expect(await typeCodex('hello', false, t.io)).toBe('Claude Code is suspended (Ctrl-Z)')
+    expect(t.calls).toEqual(['state', 'checkPane'])
+  })
+
+  it('leaves Enter unpressed when the screen changed after the paste (a popup opened)', async () => {
+    for (const second of [at('unknown', 'popup_file'), at('waiting', 'approval_command')]) {
+      const t = io([at('idle', 'idle_empty'), second])
+      expect(await typeCodex('look at @src', false, t.io)).toBe("pasted but not sent — Codex isn't at its prompt; check the terminal")
+      expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state'])
+    }
+  })
+
+  it('leaves Enter unpressed when the composer looks the same after the paste (the text never landed)', async () => {
+    // The status row differs, but only the composer counts.
+    const after = at('idle', 'idle_draft')
+    after.screen = after.screen!.replace('· /tmp/project', '· /tmp/project · Reply with pong')
+    // Only two re-reads after the paste, so Enter still lands inside Codex's 1 s hold on approvals after typing.
+    const t = io([at('idle', 'idle_draft'), ...Array(6).fill(after)])
+    expect(await typeCodex('hello', false, t.io)).toBe("pasted but not sent — Codex didn't take the text; check the terminal")
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', ...retries.slice(0, 4)])
+  })
+
+  it('reports a message Codex kept in its composer after Enter, so it is not marked sent', async () => {
+    const t = io([at('idle', 'idle_empty'), ...Array.from({ length: 7 }, () => at('idle', 'idle_draft'))])
+    expect(await typeCodex('/foo bar', false, t.io)).toBe('Codex kept the message in its composer instead of sending it — check the terminal')
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste', 'state', 'enter', 'state', ...retries])
+  })
+
+  it('counts a message as sent when Enter leaves the prompt (an approval opened)', async () => {
+    const t = io([at('idle', 'idle_empty'), at('idle', 'idle_draft'), at('waiting', 'approval_command')])
+    expect(await typeCodex('hello', false, t.io)).toBeNull()
+  })
+
+  it('passes a failed paste on, without pressing Enter', async () => {
+    const t = io(sent(), null, true)
+    await expect(typeCodex('hello', false, t.io)).rejects.toThrow(/load-buffer/)
+    expect(t.calls).toEqual(['state', 'checkPane', 'paste'])
+  })
+})
+
+describe('codexStart', () => {
+  const meta = { id: 't', cwd: '/p', originator: 'codex-tui', threadSource: 'user', historyMode: 'paginated', forkedFromId: null }
+
+  it('reads a thread first seen after startup from its start, whatever its age, or an unreadable header', () => {
+    expect(codexStart(meta, 'birth', 900)).toEqual({ offset: 0, notice: null })
+    expect(codexStart(null, 'birth', 900)).toEqual({ offset: 0, notice: null })
+  })
+
+  it('reads a thread already running at startup from its end', () => {
+    expect(codexStart(meta, 'eof', 900)).toEqual({ offset: 900, notice: null })
+  })
+
+  it('starts a forked thread at its end, so the history it copied is not replayed', () => {
+    expect(codexStart({ ...meta, forkedFromId: 'parent' }, 'birth', 900)).toEqual({ offset: 900, notice: null })
+  })
+
+  // A resumed thread matches only after its first new write, which brings task_started and the prompt together.
+  it('keeps the first prompt of a resumed thread and drops its history', () => {
+    const rollout = readFileSync(new URL('./fixtures/codex/rollout.jsonl', import.meta.url), 'utf8')
+    const { offset } = codexStart(meta, 'birth', Buffer.byteLength(rollout))
+    // Resumed a few seconds before the second turn's task_started (07:53:24.598), prompt 0.17 s later.
+    const seenAt = Date.parse('2026-11-15T07:53:20Z')
+    const events = freshEvents(rollout.slice(offset).split('\n'), seenAt, parseCodexLine)
+    expect(events.slice(0, 2)).toEqual([
+      { kind: 'prompt', text: 'Line one of the probe.\nLine two of the probe.\nReply with exactly: ok' },
+      { kind: 'text', text: 'ok' },
+    ])
+  })
+
+  it('says when a thread records no output', () => {
+    expect(codexStart({ ...meta, historyMode: 'legacy' }, 'birth', 900)).toEqual({
+      offset: 0, notice: "-# 📭 This Codex thread doesn't record its output; only approvals and typing work here.",
+    })
+  })
+})
+
+describe('CATEGORY', () => {
+  it('puts each provider in its own live category', () => {
+    expect(CATEGORY).toEqual({ claude: 'Claude Sessions', codex: 'Codex Sessions' })
+  })
+})
+
 describe('missCount', () => {
   it('ends a session only after two polls in a row without its registry entry', () => {
     const first = missCount(0, false)
@@ -374,5 +530,12 @@ describe('readOnlyReason', () => {
     expect(readOnlyReason({ interactive: false, pane: '%3' }, 'darwin', {})).toBe('it is a background session')
     expect(readOnlyReason({ interactive: true, pane: null }, 'linux', {})).toBe('it is not running inside tmux')
     expect(readOnlyReason(tmuxed, 'win32', {})).toBe('typing on Windows is off (set CCDS_WINDOWS_TYPING=1)')
+  })
+})
+
+describe('seenAfterChange', () => {
+  it('reaches back one wide-scan period for Codex, whose resumed thread is only noticed by the 30 s scan', () => {
+    expect(seenAfterChange('codex', 100_000)).toBe(70_000)
+    expect(seenAfterChange('claude', 100_000)).toBe(100_000)
   })
 })

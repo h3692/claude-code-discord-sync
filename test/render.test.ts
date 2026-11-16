@@ -181,6 +181,10 @@ describe('renderCard', () => {
     expect(renderCard('Allow?\n1. Yes\n2. No')).toEqual({ title: '🟡 Claude needs you', description: '```\nAllow?\n1. Yes\n2. No\n```' })
   })
 
+  it('names the agent that is waiting', () => {
+    expect(renderCard('Allow?', 'Codex').title).toBe('🟡 Codex needs you')
+  })
+
   it('starts at the prompt\'s top border, dropping the chat above it and trailing spaces', () => {
     const screen = `⏺ earlier reply\n${'─'.repeat(40)}\n Which color?   \n❯ 1. Red\n  2. Green\n`
     expect(renderCard(screen).description).toBe('```\n Which color?\n❯ 1. Red\n  2. Green\n```')

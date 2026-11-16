@@ -1,0 +1,45 @@
+› Run exactly this shell command once, requesting approval/escalation if needed: touch probe1.txt
+  └ plugin contents changed; hook approval required            
+                                                                                                                                            
+• I’ll run the requested command once and request the required filesystem approval.                                                         
+                                                                                                                                            
+✔ You approved codex to run touch probe1.txt this time                                                                                      
+                                                                                                                                            
+• Ran touch probe1.txt                                         
+  └ (no output)                                                                                                                             
+                                                                                                                                            
+• Created probe1.txt.                                                                                                                       
+                                                                                                                                            
+  Worked for 15s • 2:54 AM                                                                                                                  
+                                                                                                                                            
+                                                                                                                                            
+› In ONE response, issue TWO separate shell tool calls in parallel (do not combine them), each requesting escalation: `touch probe2.txt`    
+  and `touch probe3.txt`.                                                                                                                   
+                                                                                                                                            
+                                                                                                                                            
+• Hook failed                                                                                                                               
+  └ plugin contents changed; hook approval required                                                                                         
+                                                                                                                                            
+• I’ll issue two separate shell calls in parallel, each with its own escalation request.                                                    
+                                                                                                                                            
+• Running touch probe2.txt                                                              
+                                                                                                                                            
+✔ You approved codex to run touch probe2.txt this time                                                                                      
+                                                                                                                                            
+• Running touch probe3.txt                                                                                                                  
+                                                                                                                                            
+                                                                                                                                            
+  Would you like to run the following command?                                                                                              
+                                                                                                                                            
+  Environment: local                                                                                                                        
+                                                                                                                                            
+  Reason: May I create probe3.txt by running the requested touch command?                                                                   
+                                                                                                                                            
+  $ touch probe3.txt                                                                                                                        
+                                                                                                                                            
+                                                                                                                                            
+› 1. Yes, proceed (y)                                                                                                                       
+  2. Yes, and don't ask again for commands that start with `touch probe3.txt` (p)                
+  3. No, and tell Codex what to do differently (esc)      
+                                                                                                                                            
+  Press enter to confirm or esc to cancel                                                                                                   

@@ -7,6 +7,7 @@ import type { Action, State } from '../src/mirror.ts'
 import type { TranscriptEvent } from '../src/transcript.ts'
 import { renderActivity, renderAgents, renderCard, renderDone, renderPrompt, renderReadOnly, renderText } from '../src/render.ts'
 import { parseDialog, screenHash } from '../src/tmux.ts'
+import { codexScreen, parseCodexLine } from '../src/codex.ts'
 
 const cwd = '/Users/me/proj'
 const procStart = 'Thu Nov  3 10:00:01 2026'
@@ -727,5 +728,102 @@ describe('pickArchiveCategory', () => {
       { id: 'a', name: 'Archive', count: 50 },
       { id: 'b', name: 'Archive 2', count: 50 },
     ], 120)).toEqual({ create: 'Archive 3' })
+  })
+})
+
+describe('step: Codex', () => {
+  const codex = () => newMirror({ pid: 7, procStart, sessionId: 't1', cwd, name: '', pane: '%2', status: 'idle', provider: 'codex' }, 'u1')
+  const cscreen = (name: string) => readFileSync(new URL(`./fixtures/codex/screens/${name}.txt`, import.meta.url), 'utf8')
+  const cstatus = (state: State, status: string, name: string | null = null) => step(state, { kind: 'status', status, screen: name && cscreen(name) })
+
+  it('records the provider, Claude by default', () => {
+    expect(codex().state.provider).toBe('codex')
+    expect(start().state.provider).toBe('claude')
+  })
+
+  it('posts a Codex card with buttons from the Codex approval parser', () => {
+    const { state, actions } = cstatus(codex().state, 'waiting', 'approval_command')
+    const d = codexScreen(cscreen('approval_command')).dialog!
+    expect(actions).toEqual([{
+      type: 'send', ref: state.card!.ref, content: '<@u1>', ping: true, embed: renderCard(cscreen('approval_command').slice(cscreen('approval_command').indexOf('  Would you like')), 'Codex'),
+      buttons: d.options.map(({ n, label }) => ({ id: `ccds:${n}:${d.hash}`, label: `${n}. ${label}` })),
+    }])
+    expect((actions[0] as { embed: { title: string } }).embed.title).toBe('🟡 Codex needs you')
+    expect(state.card!.hash).toBe(d.hash)
+  })
+
+  it('starts the Codex card at the approval title, leaving earlier chat out', () => {
+    const { actions } = cstatus(codex().state, 'waiting', 'approval_command')
+    expect((actions[0] as { embed: { description: string } }).embed.description).toMatch(/^```\n {2}Would you like to run the following command\?\n/)
+  })
+
+  it('names Codex when refusing a ! message in a Codex channel', () => {
+    expect(say(codex().state, '!ls').actions).toEqual([{
+      type: 'reply', replyTo: 'm1',
+      content: "🚫 Messages starting with `!` aren't sent — Codex would run them as shell commands. Commands: `!keys`, `!type`, `!archive`.",
+    }])
+  })
+
+  it('never posts or closes a card on an unknown screen', () => {
+    expect(cstatus(codex().state, 'unknown').actions).toEqual([])
+    const a = cstatus(codex().state, 'waiting', 'approval_command')
+    const b = cstatus(a.state, 'unknown')
+    expect(b.actions).toEqual([])
+    expect(b.state.card).toEqual(a.state.card)
+  })
+
+  it('closes a card only after two idle polls in a row', () => {
+    const a = cstatus(codex().state, 'waiting', 'approval_command')
+    const b = cstatus(a.state, 'idle')
+    expect(b.actions).toEqual([])
+    const c = cstatus(cstatus(b.state, 'unknown').state, 'idle')
+    expect(c.actions).toEqual([])
+    expect(cstatus(c.state, 'idle').actions).toEqual([expect.objectContaining({ type: 'edit', ref: a.state.card!.ref, content: '✅ answered in terminal' })])
+    // A queued approval right after an idle capture is the same card, not a close and a new ping.
+    const d = cstatus(cstatus(b.state, 'waiting', 'approval_command').state, 'idle')
+    expect(d.actions).toEqual([])
+  })
+
+  it('leaves `!type` out of the hint, since Codex refuses it while a prompt is open', () => {
+    const gap = cscreen('approval_command').replace('  3. No,', '  4. No,')
+    const { actions } = step(codex().state, { kind: 'status', status: 'waiting', screen: gap })
+    expect((actions[0] as { embed: { description: string } }).embed.description)
+      .toMatch(/\n-# Can't read the options reliably — reply with `!keys 2` or `!keys Down Enter`$/)
+  })
+
+  it('answers with the digit only, never Enter', () => {
+    const a = cstatus(codex().state, 'waiting', 'approval_command')
+    const hash = codexScreen(cscreen('approval_command')).dialog!.hash
+    const b = step(a.state, { kind: 'button', id: 'i1', n: 1, hash, status: 'waiting', screen: cscreen('approval_command') })
+    expect(b.actions[0]).toEqual({ type: 'keys', keys: ['1'], hash })
+  })
+
+  it('takes the first rollout of a pending session without a divider, but a later new thread gets one', () => {
+    const pending = newMirror({ pid: 7, procStart, sessionId: '', cwd, name: '', pane: '%2', status: 'idle', provider: 'codex' }, 'u1')
+    const a = step(pending.state, { kind: 'session_changed', sessionId: 't1' })
+    expect(a.actions).toEqual([])
+    expect(a.state.sessionId).toBe('t1')
+    expect(step(a.state, { kind: 'session_changed', sessionId: 't2' }).actions).toEqual([expect.objectContaining({ content: '-# ── new conversation ──' })])
+  })
+
+  it('marks running sub-agents stopped on an aborted turn, without a ping', () => {
+    const a = events(codex().state, agent('a1'))
+    const b = events(a.state, { kind: 'turn_aborted' })
+    expect(b.state.agents).toEqual([expect.objectContaining({ id: 'a1', state: 'stopped' })])
+    expect(b.actions).toEqual([{ type: 'edit', ref: a.state.agentsRef, content: renderAgents(b.state.agents) }])
+  })
+
+  it('posts a notice line', () => {
+    expect(step(codex().state, { kind: 'notice', text: '-# hi' }).actions).toEqual([{ type: 'send', ref: expect.any(String), content: '-# hi' }])
+  })
+
+  it('skips the rollout echo of a message pasted from Discord', () => {
+    const a = say(codex().state, 'fix the login bug')
+    expect(a.actions).toEqual([{ type: 'paste', text: 'fix the login bug', replyTo: 'm1' }])
+    const line = JSON.stringify({
+      timestamp: '2026-11-15T08:00:00.000Z', type: 'event_msg',
+      payload: { type: 'item_completed', item: { type: 'UserMessage', id: 'u', content: [{ type: 'text', text: 'fix the login bug' }] } },
+    })
+    expect(events(a.state, ...parseCodexLine(line)).actions).toEqual([])
   })
 })

@@ -44,7 +44,7 @@ describe.skipIf(process.platform === 'win32')('listSessions', () => {
     await writeFile(join(projectsDir, '-Users-me-proj', 'sid-a.jsonl'), '')
     expect(await listSessions(sessionsDir, projectsDir)).toEqual([{
       pid: process.pid, procStart, sessionId: 'sid-a', cwd: '/Users/me/proj', name: 'proj-1', status: 'waiting',
-      interactive: true, pane: '%11', transcript: join(projectsDir, '-Users-me-proj', 'sid-a.jsonl'),
+      interactive: true, pane: '%11', transcript: join(projectsDir, '-Users-me-proj', 'sid-a.jsonl'), provider: 'claude',
     }])
   })
 
