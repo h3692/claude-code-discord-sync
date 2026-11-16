@@ -745,11 +745,23 @@ describe('step: Codex', () => {
     const { state, actions } = cstatus(codex().state, 'waiting', 'approval_command')
     const d = codexScreen(cscreen('approval_command')).dialog!
     expect(actions).toEqual([{
-      type: 'send', ref: state.card!.ref, content: '<@u1>', ping: true, embed: renderCard(cscreen('approval_command'), 'Codex'),
+      type: 'send', ref: state.card!.ref, content: '<@u1>', ping: true, embed: renderCard(cscreen('approval_command').slice(cscreen('approval_command').indexOf('  Would you like')), 'Codex'),
       buttons: d.options.map(({ n, label }) => ({ id: `ccds:${n}:${d.hash}`, label: `${n}. ${label}` })),
     }])
     expect((actions[0] as { embed: { title: string } }).embed.title).toBe('🟡 Codex needs you')
     expect(state.card!.hash).toBe(d.hash)
+  })
+
+  it('starts the Codex card at the approval title, leaving earlier chat out', () => {
+    const { actions } = cstatus(codex().state, 'waiting', 'approval_command')
+    expect((actions[0] as { embed: { description: string } }).embed.description).toMatch(/^```\n {2}Would you like to run the following command\?\n/)
+  })
+
+  it('names Codex when refusing a ! message in a Codex channel', () => {
+    expect(say(codex().state, '!ls').actions).toEqual([{
+      type: 'reply', replyTo: 'm1',
+      content: "🚫 Messages starting with `!` aren't sent — Codex would run them as shell commands. Commands: `!keys`, `!type`, `!archive`.",
+    }])
   })
 
   it('never posts or closes a card on an unknown screen', () => {

@@ -263,7 +263,12 @@ export function step(state: State, input: Input): { state: State; actions: Actio
       })
       const agent = s.provider === 'codex' ? 'Codex' : 'Claude'
       let embed = { title: renderCard('', agent).title, description: s.pane ? NO_SCREEN : NO_TMUX }
-      if (input.screen) embed = renderCard(input.screen, agent)
+      if (input.screen) {
+        // Codex draws no border above its prompt, so its card starts at the approval title instead.
+        const rows = input.screen.split('\n')
+        const shown = s.provider === 'codex' && dialog ? rows.slice(rows.findLastIndex((l) => l.trim() === dialog.question)).join('\n') : input.screen
+        embed = renderCard(shown, agent)
+      }
       if (input.screen && !dialog) {
         const hint = s.provider === 'codex' ? CODEX_HINT : HINT
         const over = embed.description.length + hint.length - EMBED_MAX
@@ -327,6 +332,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
     case 'message': {
       // Normalized up front so the `!` checks see what the paste would actually type.
       const text = normalize(input.text)
+      const tool = s.provider === 'codex' ? 'Codex' : 'Claude Code'
       const reply = (content: string) => actions.push({ type: 'reply', replyTo: input.id, content })
       const paste = (t: string, allowWaiting = false) => {
         actions.push(allowWaiting ? { type: 'paste', text: t, replyTo: input.id, allowWaiting } : { type: 'paste', text: t, replyTo: input.id })
@@ -350,7 +356,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
           case 'type':
             if (!s.pane) reply(READ_ONLY)
             else if (!args) reply('✍️ Usage: `!type your answer`')
-            else if (SHELL.test(args)) reply('🚫 That text starts with `!`, which Claude Code would run as a shell command — not sent.')
+            else if (SHELL.test(args)) reply(`🚫 That text starts with \`!\`, which ${tool} would run as a shell command — not sent.`)
             else paste(args, true)
             break
           case 'archive':
@@ -362,7 +368,7 @@ export function step(state: State, input: Input): { state: State; actions: Actio
             reply('📦 This channel will be archived when the session ends.')
             break
           default:
-            reply("🚫 Messages starting with `!` aren't sent — Claude Code would run them as shell commands. Commands: `!keys`, `!type`, `!archive`.")
+            reply(`🚫 Messages starting with \`!\` aren't sent — ${tool} would run them as shell commands. Commands: \`!keys\`, \`!type\`, \`!archive\`.`)
         }
       } else if (!s.pane) reply(READ_ONLY)
       else if (s.status === 'waiting') reply('🟡 A prompt is open — tap a button, or use `!keys` / `!type`.')
